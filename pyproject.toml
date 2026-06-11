@@ -1,0 +1,12 @@
+[project]
+name = "repo-analysis"
+version = "0.1.0"
+description = "Code-intelligence and retrieval workbench for local source repositories"
+requires-python = ">=3.10"
+dependencies = ["lmdb>=1.4", "ryugraph>=25.9.2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+
+[tool.repo_analysis]
+implemented_phase = "compiler_probed_statement_graph_and_embedding_sidecar_slice"

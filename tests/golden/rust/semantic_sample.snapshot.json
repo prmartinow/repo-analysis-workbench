@@ -1,0 +1,308 @@
+{
+  "summary": {
+    "rust_files": 1,
+    "symbols": 12,
+    "imports": 2,
+    "references": 5,
+    "statements": 4,
+    "tests": 0,
+    "kind_counts": [
+      {
+        "kind": "enum",
+        "count": 1
+      },
+      {
+        "kind": "field",
+        "count": 2
+      },
+      {
+        "kind": "function",
+        "count": 2
+      },
+      {
+        "kind": "impl",
+        "count": 1
+      },
+      {
+        "kind": "local",
+        "count": 1
+      },
+      {
+        "kind": "method",
+        "count": 1
+      },
+      {
+        "kind": "struct",
+        "count": 2
+      },
+      {
+        "kind": "variant",
+        "count": 2
+      }
+    ],
+    "reference_kind_counts": [
+      {
+        "kind": "call",
+        "count": 2
+      },
+      {
+        "kind": "use",
+        "count": 3
+      }
+    ],
+    "statement_kind_counts": [
+      {
+        "kind": "expr",
+        "count": 3
+      },
+      {
+        "kind": "let",
+        "count": 1
+      }
+    ]
+  },
+  "parser_backends": {
+    "rustc_ast_probe": {
+      "available": true,
+      "used": true,
+      "files": 1,
+      "parsed_files": 1,
+      "item_counts": [
+        {
+          "kind": "enum",
+          "count": 1
+        },
+        {
+          "kind": "function",
+          "count": 3
+        },
+        {
+          "kind": "impl",
+          "count": 1
+        },
+        {
+          "kind": "struct",
+          "count": 3
+        },
+        {
+          "kind": "use",
+          "count": 1
+        }
+      ],
+      "statement_counts": [
+        {
+          "kind": "expr",
+          "count": 2
+        },
+        {
+          "kind": "semi",
+          "count": 1
+        }
+      ],
+      "control_counts": []
+    }
+  },
+  "symbols": [
+    {
+      "kind": "struct",
+      "qualified_name": "demo_crate::Helper",
+      "statement_id": false
+    },
+    {
+      "kind": "function",
+      "qualified_name": "demo_crate::call_helper",
+      "statement_id": false
+    },
+    {
+      "kind": "function",
+      "qualified_name": "demo_crate::make_count",
+      "statement_id": false
+    },
+    {
+      "kind": "struct",
+      "qualified_name": "demo_crate::Service",
+      "statement_id": false
+    },
+    {
+      "kind": "enum",
+      "qualified_name": "demo_crate::Mode",
+      "statement_id": false
+    },
+    {
+      "kind": "impl",
+      "qualified_name": "demo_crate::impl Service",
+      "statement_id": false
+    },
+    {
+      "kind": "method",
+      "qualified_name": "demo_crate::Service::build",
+      "statement_id": false
+    },
+    {
+      "kind": "field",
+      "qualified_name": "demo_crate::Service::helper",
+      "statement_id": false
+    },
+    {
+      "kind": "field",
+      "qualified_name": "demo_crate::Service::count",
+      "statement_id": false
+    },
+    {
+      "kind": "variant",
+      "qualified_name": "demo_crate::Mode::Idle",
+      "statement_id": false
+    },
+    {
+      "kind": "variant",
+      "qualified_name": "demo_crate::Mode::Active",
+      "statement_id": false
+    },
+    {
+      "kind": "local",
+      "qualified_name": "demo_crate::Service::build::count@L23",
+      "statement_id": true
+    }
+  ],
+  "imports": [
+    {
+      "target": "crate::call_helper",
+      "target_qualified_name": "demo_crate::call_helper"
+    },
+    {
+      "target": "crate::Helper",
+      "target_qualified_name": "demo_crate::Helper"
+    }
+  ],
+  "references": [
+    {
+      "kind": "use",
+      "container": "demo_crate::call_helper",
+      "target": "demo_crate::Helper"
+    },
+    {
+      "kind": "use",
+      "container": "demo_crate::Service::helper",
+      "target": "demo_crate::Helper"
+    },
+    {
+      "kind": "use",
+      "container": "demo_crate::Service::build",
+      "target": "demo_crate::Helper"
+    },
+    {
+      "kind": "call",
+      "container": "demo_crate::Service::build",
+      "target": "demo_crate::make_count"
+    },
+    {
+      "kind": "call",
+      "container": "demo_crate::Service::build",
+      "target": "demo_crate::call_helper"
+    }
+  ],
+  "statements": [
+    {
+      "kind": "expr",
+      "container": "demo_crate::make_count",
+      "text": "1",
+      "defines": [],
+      "reads": [],
+      "writes": [],
+      "calls": []
+    },
+    {
+      "kind": "let",
+      "container": "demo_crate::Service::build",
+      "text": "let count = make_count()",
+      "defines": [
+        "demo_crate::Service::build::count@L23"
+      ],
+      "reads": [],
+      "writes": [],
+      "calls": [
+        "demo_crate::make_count"
+      ]
+    },
+    {
+      "kind": "expr",
+      "container": "demo_crate::Service::build",
+      "text": "call_helper(helper)",
+      "defines": [],
+      "reads": [
+        "demo_crate::Service::helper"
+      ],
+      "writes": [],
+      "calls": [
+        "demo_crate::call_helper"
+      ]
+    },
+    {
+      "kind": "expr",
+      "container": "demo_crate::Service::build",
+      "text": "Self { helper: Helper, count }",
+      "defines": [],
+      "reads": [
+        "demo_crate::Service::helper",
+        "demo_crate::Helper",
+        "demo_crate::Service::build::count@L23"
+      ],
+      "writes": [],
+      "calls": []
+    }
+  ],
+  "graph_edge_counts": [
+    {
+      "type": "CALLS",
+      "count": 4
+    },
+    {
+      "type": "CONTAINS",
+      "count": 16
+    },
+    {
+      "type": "CONTROL_FLOW",
+      "count": 2
+    },
+    {
+      "type": "DATA_FLOW",
+      "count": 1
+    },
+    {
+      "type": "DECLARES",
+      "count": 6
+    },
+    {
+      "type": "DEFINES",
+      "count": 7
+    },
+    {
+      "type": "IMPORTS",
+      "count": 2
+    },
+    {
+      "type": "NEIGHBOR",
+      "count": 14
+    },
+    {
+      "type": "READS",
+      "count": 7
+    },
+    {
+      "type": "REFERENCES",
+      "count": 1
+    },
+    {
+      "type": "REFS",
+      "count": 11
+    },
+    {
+      "type": "USES",
+      "count": 3
+    },
+    {
+      "type": "USES_TYPE",
+      "count": 3
+    }
+  ]
+}

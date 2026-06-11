@@ -1,0 +1,6 @@
+{
+  "name": "repo-analysis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Code-intelligence and retrieval workbench for local source repositories"
+}

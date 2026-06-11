@@ -1,0 +1,1 @@
+"""Repository-specific inventory adapters."""

@@ -1,0 +1,5 @@
+lexical: bm25
+graph_expansion: {enabled: true, max_depth: 2, max_fanout: 32}
+embeddings: {enabled: true, provider: auto}
+summaries: {enabled: true}
+selective_retrieval: {enabled: true}

@@ -1,0 +1,2 @@
+repos: []
+parsers: [tree-sitter, rust-analyzer]

@@ -1,0 +1,2 @@
+"""Tantivy-backed search adapter."""
+
