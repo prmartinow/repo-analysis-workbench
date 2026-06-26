@@ -57,7 +57,7 @@ from retrieval.engine import retrieve_context
 from rerank.fusion import rerank_candidates
 from search.indexer import build_search_index, search_documents
 from summaries.builder import build_summary_artifacts, sync_summary_state
-from symbols.indexer import build_symbol_index
+from symbols.indexer import build_symbol_index, timestamp_now
 from symbols.persistence import load_summary_bundle_from_metadata, load_symbol_index, write_metadata_bundle
 
 
@@ -817,6 +817,96 @@ class SearchAndSummaryTest(unittest.TestCase):
             self.assertEqual(directory_summary["summary"]["path"], "src")
             packages = load_summary_bundle_from_metadata(paths["parsed_root"], "demo")["packages"]
             self.assertTrue(any(item["package_name"] == "demo-crate" for item in packages))
+
+    def test_summary_fallback_covers_non_rust_repo_without_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_root = root / "raw"
+            parsed_root = root / "parsed"
+            graph_root = root / "graph"
+            repo_root = root / "demo"
+            repo_root.mkdir()
+            (repo_root / "README.md").write_text("# Demo\n\nInventory only.\n", encoding="utf-8")
+            (repo_root / "src").mkdir()
+            (repo_root / "src" / "main.py").write_text("print('hello')\n", encoding="utf-8")
+            (raw_root / "demo").mkdir(parents=True)
+            (raw_root / "demo" / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "parser_relevant_source_roots": [],
+                        "language_mix": [{"language": "Python", "files": 1}, {"language": "Markdown", "files": 1}],
+                        "module_graph_seeds": {"analysis_surfaces": ["src", "docs"]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (raw_root / "demo" / "repo_map.json").write_text(
+                json.dumps(
+                    {
+                        "directories": [{"path": ".", "depth": 0}, {"path": "src", "depth": 1}],
+                        "files": [
+                            {
+                                "path": "README.md",
+                                "size": 24,
+                                "extension": ".md",
+                                "language": "Markdown",
+                                "generated": False,
+                                "content_hash": "readme",
+                            },
+                            {
+                                "path": "src/main.py",
+                                "size": 15,
+                                "extension": ".py",
+                                "language": "Python",
+                                "generated": False,
+                                "content_hash": "main",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            symbol_payload = {
+                "schema_version": "0.6.0",
+                "repo": "demo",
+                "generated_at": timestamp_now(),
+                "parser": "test-empty",
+                "primary_parser_backends": {},
+                "parser_backends": {},
+                "source_roots": [],
+                "path_prefixes": [],
+                "files": [],
+                "symbols": [],
+                "imports": [],
+                "references": [],
+                "statements": [],
+                "summary": {
+                    "files": 0,
+                    "rust_files": 0,
+                    "symbols": 0,
+                    "imports": 0,
+                    "references": 0,
+                    "statements": 0,
+                    "tests": 0,
+                    "kind_counts": [],
+                    "provider_counts": [],
+                    "reference_kind_counts": [],
+                    "statement_kind_counts": [],
+                },
+            }
+            write_metadata_bundle(parsed_root, "demo", symbol_payload)
+            write_graph_database(graph_root, "demo", build_graph_artifact(symbol_payload))
+
+            payload = build_summary_artifacts("demo", raw_root, parsed_root, graph_root)
+
+            self.assertEqual(payload["summary"]["files"], 2)
+            main_summary = next(item for item in payload["files"] if item["path"] == "src/main.py")
+            src_summary = next(item for item in payload["directories"] if item["path"] == "src")
+            self.assertEqual(main_summary["provider"], "inventory_fallback")
+            self.assertEqual(main_summary["confidence"], "shallow")
+            self.assertIn("Python file", main_summary["summary"])
+            self.assertEqual(src_summary["provider"], "inventory_fallback")
+            self.assertEqual(src_summary["language_counts"], [{"language": "Python", "files": 1}])
 
     def test_benchmark_harness_reports_answer_quality(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -67,13 +67,13 @@ def build_summary_artifacts(
 
     incoming_counts, outgoing_counts = edge_counts(graph)
     emit("building_project_summary")
-    project_summary = build_project_summary(repo_name, manifest, symbols, graph)
+    project_summary = build_project_summary(repo_name, manifest, repo_map, symbols, graph)
     emit("building_package_summaries")
     package_summaries = build_package_summaries(symbols)
     emit("building_directory_summaries")
     directory_summaries = build_directory_summaries(repo_map, symbols)
     emit("building_file_summaries")
-    file_summaries = build_file_summaries(symbols, symbols_by_path)
+    file_summaries = build_file_summaries(repo_map, symbols, symbols_by_path)
     emit("building_symbol_summaries")
     symbol_summaries = build_symbol_summaries(symbol_records, incoming_counts, outgoing_counts)
 
@@ -104,6 +104,7 @@ def build_summary_artifacts(
 def build_project_summary(
     repo_name: str,
     manifest: Dict[str, object],
+    repo_map: Dict[str, object],
     symbols: Dict[str, object],
     graph: Dict[str, object],
 ) -> Dict[str, object]:
@@ -112,11 +113,21 @@ def build_project_summary(
     language_mix = [f"{item['language']}:{item['files']}" for item in manifest.get("language_mix", [])[:5]]
     kind_counts = symbols.get("summary", {}).get("kind_counts", [])
     top_kinds = [f"{item['kind']}:{item['count']}" for item in kind_counts[:6]]
+    summary_payload = symbols.get("summary", {})
+    file_count = max(
+        int(summary_payload.get("files") or 0),
+        len(symbols.get("files", [])),
+        len(repo_map.get("files", [])),
+    )
+    rust_files = int(
+        summary_payload.get("rust_files")
+        or sum(1 for item in repo_map.get("files", []) if item.get("language") == "Rust")
+    )
     summary = (
         f"{repo_name} is indexed as {focus}. "
-        f"The current analysis slice covers {symbols['summary']['rust_files']} Rust files, "
-        f"{symbols['summary']['symbols']} symbols, {symbols['summary']['imports']} imports, "
-        f"{symbols['summary'].get('statements', 0)} statements, "
+        f"The current analysis slice covers {file_count} files, including {rust_files} Rust files, "
+        f"{summary_payload.get('symbols', 0)} symbols, {summary_payload.get('imports', 0)} imports, "
+        f"{summary_payload.get('statements', 0)} statements, "
         f"and {graph['summary']['edges']} graph edges. "
         f"Indexed source roots: {', '.join(source_roots) or 'none detected'}."
     )
@@ -130,6 +141,7 @@ def build_project_summary(
         "test_commands": list(manifest.get("test_commands", [])),
         "language_mix": language_mix,
         "top_symbol_kinds": top_kinds,
+        "provider_counts": symbols.get("summary", {}).get("provider_counts", []),
         "summary": summary,
     }
 
@@ -199,6 +211,8 @@ def build_directory_summaries(repo_map: Dict[str, object], symbols: Dict[str, ob
             "symbols": 0,
             "statements": 0,
             "public_symbols": 0,
+            "language_counts": Counter(),
+            "sample_files": [],
             "top_symbol_kinds": Counter(),
         }
     )
@@ -207,6 +221,10 @@ def build_directory_summaries(repo_map: Dict[str, object], symbols: Dict[str, ob
             rollups[prefix]["files"] += 1
             if file_record.get("language") == "Rust":
                 rollups[prefix]["rust_files"] += 1
+            language = str(file_record.get("language") or "Other")
+            rollups[prefix]["language_counts"][language] += 1
+            if len(rollups[prefix]["sample_files"]) < 8:
+                rollups[prefix]["sample_files"].append(file_record["path"])
 
     for symbol in symbols.get("symbols", []):
         for prefix in directory_prefixes(symbol["path"]):
@@ -224,6 +242,12 @@ def build_directory_summaries(repo_map: Dict[str, object], symbols: Dict[str, ob
         path = directory["path"]
         rollup = rollups.get(path, {})
         top_kinds = [kind for kind, _count in rollup.get("top_symbol_kinds", Counter()).most_common(4)]
+        language_counts = [
+            {"language": language, "files": count}
+            for language, count in rollup.get("language_counts", Counter()).most_common(5)
+        ]
+        provider = "parsed_symbols" if rollup.get("symbols", 0) else "inventory_fallback"
+        confidence = "provider_backed" if rollup.get("symbols", 0) else "shallow"
         tags = path_tags(path)
         summaries.append(
             {
@@ -236,11 +260,16 @@ def build_directory_summaries(repo_map: Dict[str, object], symbols: Dict[str, ob
                 "statements": rollup.get("statements", 0),
                 "public_symbols": rollup.get("public_symbols", 0),
                 "top_symbol_kinds": top_kinds,
+                "language_counts": language_counts,
+                "sample_files": list(rollup.get("sample_files", [])),
+                "provider": provider,
+                "confidence": confidence,
                 "tags": tags,
                 "summary": (
                     f"{path} contains {rollup.get('files', 0)} files, "
                     f"{rollup.get('rust_files', 0)} Rust files, {rollup.get('symbols', 0)} indexed symbols, "
-                    f"and {rollup.get('statements', 0)} statements."
+                    f"and {rollup.get('statements', 0)} statements. "
+                    f"Languages: {format_language_counts(language_counts)}."
                 ),
             }
         )
@@ -248,11 +277,16 @@ def build_directory_summaries(repo_map: Dict[str, object], symbols: Dict[str, ob
 
 
 def build_file_summaries(
+    repo_map: Dict[str, object],
     symbols: Dict[str, object],
     symbols_by_path: Dict[str, List[Dict[str, object]]],
 ) -> List[Dict[str, object]]:
     files = []
     file_records = {item["path"]: item for item in symbols.get("files", [])}
+    for item in repo_map.get("files", []):
+        path = str(item.get("path") or "")
+        if path and path not in file_records:
+            file_records[path] = dict(item)
     statement_counts = Counter(statement["path"] for statement in symbols.get("statements", []))
     for path, file_record in sorted(file_records.items()):
         file_symbols = symbols_by_path.get(path, [])
@@ -263,6 +297,10 @@ def build_file_summaries(
         ]
         top_symbols = [str(symbol.get("qualified_name") or symbol.get("name") or "") for symbol in file_symbols[:6]]
         tags = path_tags(path)
+        provider = infer_file_summary_provider(file_record, file_symbols)
+        confidence = "provider_backed" if file_symbols else "shallow"
+        language = file_record.get("language")
+        statement_count = statement_counts.get(path, 0)
         files.append(
             {
                 "summary_id": stable_id("sum", "file", path),
@@ -270,18 +308,19 @@ def build_file_summaries(
                 "crate": file_record.get("crate"),
                 "package_name": file_record.get("package_name"),
                 "module_path": file_record.get("module_path"),
-                "language": file_record.get("language"),
+                "language": language,
+                "extension": file_record.get("extension"),
+                "generated": bool(file_record.get("generated")),
+                "size": file_record.get("size"),
                 "symbols": len(file_symbols),
                 "imports": file_record.get("imports", 0),
-                "statements": statement_counts.get(path, 0),
+                "statements": statement_count,
                 "public_symbols": public_symbols[:8],
                 "top_symbols": top_symbols,
+                "provider": provider,
+                "confidence": confidence,
                 "tags": tags,
-                "summary": (
-                    f"{path} defines {len(file_symbols)} symbols and {statement_counts.get(path, 0)} statements "
-                    f"in crate {file_record.get('crate')}. "
-                    f"Top symbols: {', '.join(top_symbols[:3]) or 'none'}."
-                ),
+                "summary": file_summary_text(path, language, len(file_symbols), statement_count, top_symbols, provider),
             }
         )
     return files
@@ -451,6 +490,42 @@ def format_edge_counts(counts: Counter) -> str:
     if not counts:
         return "none"
     return ", ".join(f"{edge_type}:{count}" for edge_type, count in sorted(counts.items()))
+
+
+def format_language_counts(language_counts: List[Dict[str, object]]) -> str:
+    if not language_counts:
+        return "none"
+    return ", ".join(f"{item['language']}:{item['files']}" for item in language_counts)
+
+
+def infer_file_summary_provider(file_record: Dict[str, object], file_symbols: List[Dict[str, object]]) -> str:
+    providers = sorted({str(symbol.get("provider") or "") for symbol in file_symbols if symbol.get("provider")})
+    if providers:
+        return "+".join(providers)
+    if file_record.get("primary_parser_backend"):
+        return str(file_record["primary_parser_backend"])
+    return "inventory_fallback"
+
+
+def file_summary_text(
+    path: str,
+    language: object,
+    symbol_count: int,
+    statement_count: int,
+    top_symbols: List[str],
+    provider: str,
+) -> str:
+    language_name = str(language or "unknown-language")
+    if symbol_count:
+        return (
+            f"{path} is a {language_name} file with {symbol_count} indexed symbols and "
+            f"{statement_count} statements from {provider}. "
+            f"Top symbols: {', '.join(top_symbols[:3]) or 'none'}."
+        )
+    return (
+        f"{path} is a {language_name} file summarized from inventory fallback. "
+        "No provider symbols or statement records are available yet."
+    )
 
 
 def directory_prefixes(path: str) -> List[str]:
