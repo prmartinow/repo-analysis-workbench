@@ -375,6 +375,15 @@ def build_graph_artifact(symbol_index: Dict[str, object]) -> Dict[str, object]:
         repo_name,
         symbol_index.get("symbols", []),
     )
+    append_scip_relationship_edges(
+        nodes,
+        node_ids,
+        edges,
+        edge_counts,
+        reference_nodes,
+        repo_name,
+        symbol_index.get("symbols", []),
+    )
     append_override_edges(
         edges,
         edge_counts,
@@ -416,6 +425,73 @@ def build_graph_artifact(symbol_index: Dict[str, object]) -> Dict[str, object]:
             ],
         },
     }
+
+
+def append_scip_relationship_edges(
+    nodes: List[Dict[str, object]],
+    node_ids: set[str],
+    edges: List[Dict[str, object]],
+    edge_counts: Dict[str, int],
+    reference_nodes: Dict[str, str],
+    repo_name: str,
+    symbols: List[Dict[str, object]],
+) -> None:
+    symbol_by_scip = {
+        str(symbol.get("scip_symbol") or ""): symbol
+        for symbol in symbols
+        if symbol.get("scip_symbol")
+    }
+    for symbol in symbols:
+        source_id = str(symbol.get("symbol_id") or "")
+        if not source_id:
+            continue
+        scip_payload = symbol.get("scip")
+        if not isinstance(scip_payload, dict):
+            continue
+        for relationship in scip_payload.get("relationships", []):
+            if not isinstance(relationship, dict):
+                continue
+            target_symbol = str(relationship.get("symbol") or "")
+            if not target_symbol:
+                continue
+            target = symbol_by_scip.get(target_symbol)
+            target_node_id = target.get("symbol_id") if target else None
+            if not target_node_id:
+                target_node_id = ensure_reference_node(
+                    nodes,
+                    node_ids,
+                    reference_nodes,
+                    repo_name,
+                    target_symbol,
+                    "scip_symbol_ref",
+                )
+            for edge_type in scip_relationship_edge_types(relationship):
+                append_edge(
+                    edges,
+                    edge_counts,
+                    make_edge(
+                        edge_type,
+                        source_id,
+                        str(target_node_id),
+                        repo_name,
+                        path=symbol.get("path"),
+                        provider="scip",
+                        scip_symbol=target_symbol,
+                    ),
+                )
+
+
+def scip_relationship_edge_types(relationship: Dict[str, object]) -> List[str]:
+    edge_types = []
+    if relationship.get("is_implementation"):
+        edge_types.append("IMPLEMENTS")
+    if relationship.get("is_type_definition"):
+        edge_types.append("TYPE_DEFINITION")
+    if relationship.get("is_definition"):
+        edge_types.append("DEFINES")
+    if relationship.get("is_reference"):
+        edge_types.append("REFERENCES")
+    return edge_types or ["REFERENCES"]
 
 
 def append_edge(edges: List[Dict[str, object]], edge_counts: Dict[str, int], edge: Dict[str, object]) -> None:

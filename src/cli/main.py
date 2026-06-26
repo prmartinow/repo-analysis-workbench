@@ -214,6 +214,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional repo-relative file or directory prefix to narrow indexing scope.",
     )
     build_index.add_argument(
+        "--scip-index",
+        action="append",
+        help="Optional repo-relative or absolute .scip/.scip.json index to import during build-index.",
+    )
+    build_index.add_argument(
         "--progress-interval",
         type=int,
         default=100,
@@ -567,6 +572,7 @@ def handle_build_index(args: argparse.Namespace) -> int:
     if not repo_names:
         raise RuntimeError("No raw inventories found. Run parse-repos first or pass --repo.")
     path_prefixes = tuple(args.path_prefix or [])
+    scip_indexes = tuple(Path(value) for value in (args.scip_index or []))
 
     parsed_root.mkdir(parents=True, exist_ok=True)
     graph_root.mkdir(parents=True, exist_ok=True)
@@ -639,6 +645,7 @@ def handle_build_index(args: argparse.Namespace) -> int:
                 path_prefixes=path_prefixes,
                 progress_callback=progress_callback,
                 cache_root=parsed_root / repo_name,
+                scip_indexes=scip_indexes,
             )
             emit_build_progress(
                 repo_progress_path,

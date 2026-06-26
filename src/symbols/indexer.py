@@ -26,6 +26,7 @@ from parsers.rust import (
 from parsers.rust_analyzer_backend import aggregate_rust_analyzer_probes, probe_rust_analyzer
 from parsers.rustc_backend import aggregate_rustc_probes, probe_rust_ast
 from parsers.ctags_backend import probe_universal_ctags
+from parsers.scip_backend import probe_scip_indexes
 from parsers.tree_sitter_backend import aggregate_tree_sitter_probes, probe_tree_sitter, probe_tree_sitter_tags
 from symbols.schema import normalize_symbol_record
 
@@ -173,6 +174,7 @@ def build_symbol_index(
     path_prefixes: Sequence[str] = (),
     progress_callback: Callable[[Dict[str, object]], None] | None = None,
     cache_root: Path | None = None,
+    scip_indexes: Sequence[Path] = (),
 ) -> Dict[str, object]:
     manifest = load_raw_manifest(raw_root, repo_name)
     repo_map = load_raw_repo_map(raw_root, repo_name)
@@ -328,6 +330,26 @@ def build_symbol_index(
             tree_sitter_symbol_records,
             provider="tree_sitter_tags",
         )
+    emit_stage_progress("probing_scip")
+    scip_probe = probe_scip_indexes(
+        repo_name,
+        repo_root,
+        repo_map,
+        scip_indexes=scip_indexes,
+        path_prefixes=normalized_path_prefixes,
+    )
+    scip_symbol_records = list(scip_probe.get("symbol_records", []))
+    scip_reference_records = list(scip_probe.get("reference_records", []))
+    if scip_symbol_records:
+        symbol_records.extend(scip_symbol_records)
+        merge_provider_document_file_records(
+            file_records,
+            repo_map,
+            scip_probe.get("file_records", []),
+            provider="scip",
+        )
+    if scip_reference_records:
+        reference_records.extend(scip_reference_records)
     emit_stage_progress("checking_duplicate_symbol_ids")
     duplicate_symbol_ids = find_duplicate_ids(symbol_records, "symbol_id")
     if duplicate_symbol_ids:
@@ -347,6 +369,7 @@ def build_symbol_index(
         ),
         "universal_ctags": provider_probe_summary(ctags_probe),
         "tree_sitter_tags": provider_probe_summary(tree_sitter_tags_probe),
+        "scip": provider_probe_summary(scip_probe),
     }
 
     emit_stage_progress("rolling_up_summary_counts")
@@ -1964,8 +1987,42 @@ def merge_provider_file_records(
         existing_paths.add(path)
 
 
+def merge_provider_document_file_records(
+    file_records: List[Dict[str, object]],
+    repo_map: Dict[str, object],
+    provider_files: Sequence[Dict[str, object]],
+    *,
+    provider: str,
+) -> None:
+    existing_paths = {str(item.get("path") or "") for item in file_records}
+    repo_files_by_path = {str(item.get("path") or ""): item for item in repo_map.get("files", [])}
+    for provider_file in sorted(provider_files, key=lambda item: str(item.get("path") or "")):
+        path = str(provider_file.get("path") or "")
+        if not path or path in existing_paths:
+            continue
+        repo_file = repo_files_by_path.get(path, {})
+        file_records.append(
+            {
+                "path": path,
+                "crate": provider_file.get("crate"),
+                "package_name": provider_file.get("package_name"),
+                "module_path": provider_file.get("module_path"),
+                "language": provider_file.get("language") or repo_file.get("language"),
+                "symbols": int(provider_file.get("symbols") or 0),
+                "imports": int(provider_file.get("imports") or 0),
+                "primary_parser_backend": provider,
+                "content_hash": provider_file.get("content_hash") or repo_file.get("content_hash"),
+            }
+        )
+        existing_paths.add(path)
+
+
 def provider_probe_summary(probe: Dict[str, object]) -> Dict[str, object]:
-    return {key: value for key, value in probe.items() if key != "symbol_records"}
+    return {
+        key: value
+        for key, value in probe.items()
+        if key not in {"file_records", "symbol_records", "reference_records"}
+    }
 
 
 def build_workspace_index(repo_root: Path) -> WorkspaceIndex:

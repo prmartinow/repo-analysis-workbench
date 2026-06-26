@@ -26,7 +26,7 @@ The implementation is complete only when repo-analysis can:
 | 3 | Universal Ctags provider | Done | Non-Rust repos produce provider-normalized symbols from `ctags --output-format=json`; provider metadata records ctags provenance. |
 | 4 | Generic non-Rust summary fallback | Done | Repos with zero symbols get project, directory, and file summaries from raw inventory, marked `inventory_fallback` and `shallow`. |
 | 5 | Tree-sitter tag provider | Done | Python, Go, JS/TS, shell, and YAML/config files can produce provider-normalized `tree_sitter_tags` symbols where grammars are available. |
-| 6 | SCIP JSON importer | Not started | `.scip` files can be imported into symbols, references, and graph edges. |
+| 6 | SCIP JSON importer | Done | `.scip`/`.scip.json` indexes can be imported into symbols, references, and graph edges through `build-index --scip-index`. |
 | 7 | Zoekt sidecar comparison | Not started | CLI can build/query Zoekt and compare ranking/latency against Tantivy. |
 | 8 | AI-tooling benchmark reports | Not started | Benchmark reports exist for the selected `/mnt/workspace/AI tooling` repos and show per-mode quality. |
 
@@ -384,10 +384,11 @@ At the start and end of each implementation session:
 
 Overall status: not complete.
 
-Current next milestone: SCIP JSON importer.
+Current next milestone: Zoekt sidecar comparison.
 
-Current risk: tree-sitter improves structural tags where grammars exist, but
-definition/reference precision still depends on external SCIP indexers.
+Current risk: SCIP import now works when an index exists, but most candidate
+repos still need language-specific SCIP indexers before this precision is
+available at scale.
 
 Latest verification:
 
@@ -405,4 +406,13 @@ python3 -m py_compile src/parsers/tree_sitter_backend.py src/symbols/indexer.py 
 /mnt/workspace/code-intel/repo-analysis-tree-sitter-venv/bin/python src/cli/main.py build-index --workspace-root "/mnt/workspace/AI tooling" --raw-root /mnt/workspace/code-intel/repo-analysis-pilot/raw --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --repo agent-kit --progress-interval 1
 python3 src/cli/main.py repo-overview --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --repo agent-kit
 python3 src/cli/main.py search-lexical --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --repo agent-kit tree_sitter_tags --limit 5
+python3 -m unittest tests.unit.test_scip_backend
+python3 -m unittest tests.unit.test_symbol_index tests.unit.test_symbol_snapshot tests.unit.test_symbol_semantics tests.unit.test_parser_fusion tests.unit.test_search_and_summaries
+python3 -m py_compile src/parsers/scip_backend.py src/symbols/indexer.py src/graph/builder.py src/cli/main.py tests/unit/test_scip_backend.py
+python3 src/cli/main.py parse-repos --workspace-root /mnt/workspace/code-intel/scip-fixture-workspace --output-root /mnt/workspace/code-intel/scip-fixture-artifacts/raw --repo scip-demo
+python3 src/cli/main.py build-index --workspace-root /mnt/workspace/code-intel/scip-fixture-workspace --raw-root /mnt/workspace/code-intel/scip-fixture-artifacts/raw --parsed-root /mnt/workspace/code-intel/scip-fixture-artifacts/parsed --graph-root /mnt/workspace/code-intel/scip-fixture-artifacts/graph --repo scip-demo --scip-index index.scip.json --progress-interval 1
+python3 src/cli/main.py build-search --raw-root /mnt/workspace/code-intel/scip-fixture-artifacts/raw --parsed-root /mnt/workspace/code-intel/scip-fixture-artifacts/parsed --search-root /mnt/workspace/code-intel/scip-fixture-artifacts/search --repo scip-demo
+python3 src/cli/main.py find-symbol --search-root /mnt/workspace/code-intel/scip-fixture-artifacts/search --repo scip-demo run --limit 5
+python3 src/cli/main.py build-summaries --raw-root /mnt/workspace/code-intel/scip-fixture-artifacts/raw --parsed-root /mnt/workspace/code-intel/scip-fixture-artifacts/parsed --graph-root /mnt/workspace/code-intel/scip-fixture-artifacts/graph --summary-root /mnt/workspace/code-intel/scip-fixture-artifacts/summaries --repo scip-demo
+python3 src/cli/main.py repo-overview --parsed-root /mnt/workspace/code-intel/scip-fixture-artifacts/parsed --repo scip-demo
 ```
