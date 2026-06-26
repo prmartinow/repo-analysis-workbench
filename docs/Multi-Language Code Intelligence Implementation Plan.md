@@ -25,7 +25,7 @@ The implementation is complete only when repo-analysis can:
 | 2 | Provider-neutral symbol records | Done | Rust symbols are normalized through provider-neutral records with `provider`, `language`, `kind`, `path`, `name`, `qualified_name`, `range`, `scope`, and `confidence`. |
 | 3 | Universal Ctags provider | Done | Non-Rust repos produce provider-normalized symbols from `ctags --output-format=json`; provider metadata records ctags provenance. |
 | 4 | Generic non-Rust summary fallback | Done | Repos with zero symbols get project, directory, and file summaries from raw inventory, marked `inventory_fallback` and `shallow`. |
-| 5 | Tree-sitter tag provider | Not started | Python, Go, JS/TS, shell, YAML/config, and Rust can be enriched with tree-sitter tag records where grammars are available. |
+| 5 | Tree-sitter tag provider | Done | Python, Go, JS/TS, shell, and YAML/config files can produce provider-normalized `tree_sitter_tags` symbols where grammars are available. |
 | 6 | SCIP JSON importer | Not started | `.scip` files can be imported into symbols, references, and graph edges. |
 | 7 | Zoekt sidecar comparison | Not started | CLI can build/query Zoekt and compare ranking/latency against Tantivy. |
 | 8 | AI-tooling benchmark reports | Not started | Benchmark reports exist for the selected `/mnt/workspace/AI tooling` repos and show per-mode quality. |
@@ -384,10 +384,10 @@ At the start and end of each implementation session:
 
 Overall status: not complete.
 
-Current next milestone: tree-sitter tag provider.
+Current next milestone: SCIP JSON importer.
 
-Current risk: ctags gives broad but shallow structure; tree-sitter still needs
-to enrich ranges, nesting, and language-specific summaries.
+Current risk: tree-sitter improves structural tags where grammars exist, but
+definition/reference precision still depends on external SCIP indexers.
 
 Latest verification:
 
@@ -400,4 +400,9 @@ python3 src/cli/main.py build-index --workspace-root "/mnt/workspace/AI tooling"
 python3 src/cli/main.py build-search --workspace-root "/mnt/workspace/AI tooling" --raw-root /mnt/workspace/code-intel/repo-analysis-pilot/raw --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --repo agent-kit
 python3 src/cli/main.py find-symbol --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --repo agent-kit mustExist --limit 5
 python3 src/cli/main.py build-summaries --raw-root /mnt/workspace/code-intel/repo-analysis-pilot/raw --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --repo agent-kit
+python3 -m unittest discover tests/unit
+python3 -m py_compile src/parsers/tree_sitter_backend.py src/symbols/indexer.py tests/unit/test_tree_sitter_backend.py
+/mnt/workspace/code-intel/repo-analysis-tree-sitter-venv/bin/python src/cli/main.py build-index --workspace-root "/mnt/workspace/AI tooling" --raw-root /mnt/workspace/code-intel/repo-analysis-pilot/raw --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --repo agent-kit --progress-interval 1
+python3 src/cli/main.py repo-overview --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --repo agent-kit
+python3 src/cli/main.py search-lexical --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --repo agent-kit tree_sitter_tags --limit 5
 ```

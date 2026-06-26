@@ -26,7 +26,7 @@ from parsers.rust import (
 from parsers.rust_analyzer_backend import aggregate_rust_analyzer_probes, probe_rust_analyzer
 from parsers.rustc_backend import aggregate_rustc_probes, probe_rust_ast
 from parsers.ctags_backend import probe_universal_ctags
-from parsers.tree_sitter_backend import aggregate_tree_sitter_probes, probe_tree_sitter
+from parsers.tree_sitter_backend import aggregate_tree_sitter_probes, probe_tree_sitter, probe_tree_sitter_tags
 from symbols.schema import normalize_symbol_record
 
 
@@ -312,6 +312,22 @@ def build_symbol_index(
             ctags_symbol_records,
             provider="universal_ctags",
         )
+    emit_stage_progress("probing_tree_sitter_tags")
+    tree_sitter_tags_probe = probe_tree_sitter_tags(
+        repo_name,
+        repo_root,
+        repo_map,
+        path_prefixes=normalized_path_prefixes,
+    )
+    tree_sitter_symbol_records = list(tree_sitter_tags_probe.get("symbol_records", []))
+    if tree_sitter_symbol_records:
+        symbol_records.extend(tree_sitter_symbol_records)
+        merge_provider_file_records(
+            file_records,
+            repo_map,
+            tree_sitter_symbol_records,
+            provider="tree_sitter_tags",
+        )
     emit_stage_progress("checking_duplicate_symbol_ids")
     duplicate_symbol_ids = find_duplicate_ids(symbol_records, "symbol_id")
     if duplicate_symbol_ids:
@@ -330,6 +346,7 @@ def build_symbol_index(
             [context.backend_probes["rust_analyzer_lsp"] for context in contexts]
         ),
         "universal_ctags": provider_probe_summary(ctags_probe),
+        "tree_sitter_tags": provider_probe_summary(tree_sitter_tags_probe),
     }
 
     emit_stage_progress("rolling_up_summary_counts")

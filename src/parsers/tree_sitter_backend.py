@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import re
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from common.inventory import is_generated_path
 from common.native_tool import probe_rust_file_native
+from symbols.schema import normalize_symbol_record
 
 ITEM_NODE_TYPES = {
     "const": {"const_item"},
@@ -53,6 +56,500 @@ GENERIC_RE = re.compile(r"<[^<>]*>")
 IMPL_HEAD_RE = re.compile(
     r"^\s*impl(?:\s*<[^>]+>\s*)?(?:(?P<trait>[A-Za-z_][A-Za-z0-9_:<>]*)\s+for\s+)?(?P<target>[A-Za-z_][A-Za-z0-9_:<>]*)"
 )
+GENERIC_NAME_NODE_TYPES = {
+    "identifier",
+    "property_identifier",
+    "field_identifier",
+    "type_identifier",
+    "word",
+    "plain_scalar",
+    "string_scalar",
+    "string",
+}
+TREE_SITTER_LANGUAGE_BY_EXTENSION = {
+    ".bash": ("bash", "Shell"),
+    ".go": ("go", "Go"),
+    ".js": ("javascript", "JavaScript"),
+    ".jsx": ("javascript", "JSX"),
+    ".mjs": ("javascript", "JavaScript"),
+    ".py": ("python", "Python"),
+    ".sh": ("bash", "Shell"),
+    ".ts": ("typescript", "TypeScript"),
+    ".tsx": ("tsx", "TSX"),
+    ".yaml": ("yaml", "YAML"),
+    ".yml": ("yaml", "YAML"),
+    ".zsh": ("bash", "Shell"),
+}
+TREE_SITTER_SYMBOL_NODE_TYPES = {
+    "bash": {
+        "function_definition": "function",
+    },
+    "go": {
+        "function_declaration": "function",
+        "method_declaration": "method",
+        "type_spec": "type",
+    },
+    "javascript": {
+        "class_declaration": "class",
+        "function_declaration": "function",
+        "generator_function_declaration": "function",
+        "method_definition": "method",
+        "variable_declarator": "variable",
+    },
+    "python": {
+        "class_definition": "class",
+        "function_definition": "function",
+    },
+    "tsx": {
+        "abstract_class_declaration": "class",
+        "class_declaration": "class",
+        "enum_declaration": "enum",
+        "function_declaration": "function",
+        "generator_function_declaration": "function",
+        "interface_declaration": "interface",
+        "method_definition": "method",
+        "type_alias_declaration": "type",
+        "variable_declarator": "variable",
+    },
+    "typescript": {
+        "abstract_class_declaration": "class",
+        "class_declaration": "class",
+        "enum_declaration": "enum",
+        "function_declaration": "function",
+        "generator_function_declaration": "function",
+        "interface_declaration": "interface",
+        "method_definition": "method",
+        "type_alias_declaration": "type",
+        "variable_declarator": "variable",
+    },
+    "yaml": {
+        "block_mapping_pair": "config_key",
+    },
+}
+TREE_SITTER_SCOPING_KINDS = {
+    "class",
+    "config_key",
+    "enum",
+    "function",
+    "interface",
+    "method",
+    "type",
+}
+TREE_SITTER_EXCLUDED_PATH_PARTS = {
+    ".next",
+    "coverage",
+    "monaco-editor",
+    "public",
+    "static",
+    "vendor",
+}
+TREE_SITTER_MAX_BYTES = 1_000_000
+
+
+def probe_tree_sitter_tags(
+    repo_name: str,
+    repo_root: Path,
+    repo_map: Dict[str, object],
+    *,
+    path_prefixes: Sequence[str] = (),
+    parser_loader: Callable[[str], Tuple[object | None, Tuple[str, ...]]] | None = None,
+) -> Dict[str, object]:
+    started = time.perf_counter()
+    files = discover_tree_sitter_files(repo_map, path_prefixes=path_prefixes)
+    if not files:
+        return {
+            "backend": "tree_sitter_tags",
+            "available": False,
+            "used": False,
+            "parsed": True,
+            "files": 0,
+            "parsed_files": 0,
+            "symbols": 0,
+            "symbol_records": [],
+            "languages": [],
+            "diagnostics": ["no tree-sitter-supported files matched the inventory"],
+            "latency_ms": elapsed_ms(started),
+        }
+
+    load_parser = parser_loader or load_generic_parser
+    parser_cache: Dict[str, Tuple[object | None, Tuple[str, ...]]] = {}
+    diagnostics: List[str] = []
+    missing_languages = set()
+    available_languages = set()
+    parsed_files = 0
+    error_nodes = 0
+    symbol_records: List[Dict[str, object]] = []
+
+    for relative_path in files:
+        language_key, language = tree_sitter_language_for_path(relative_path)
+        if not language_key:
+            continue
+        if language_key not in parser_cache:
+            parser_cache[language_key] = load_parser(language_key)
+        parser, parser_diagnostics = parser_cache[language_key]
+        if parser_diagnostics:
+            diagnostics.extend(f"{language_key}: {message}" for message in parser_diagnostics)
+        if parser is None:
+            missing_languages.add(language_key)
+            continue
+
+        available_languages.add(language_key)
+        path = repo_root / relative_path
+        try:
+            source_bytes = path.read_bytes()
+        except OSError as exc:
+            diagnostics.append(f"{relative_path}: failed to read file: {exc}")
+            continue
+
+        try:
+            tree = parser.parse(source_bytes)
+        except Exception as exc:  # pragma: no cover - depends on optional backend
+            diagnostics.append(f"{relative_path}: tree-sitter parse failed: {exc}")
+            continue
+
+        root = tree.root_node
+        node_types = list(iter_node_types(root))
+        error_nodes += sum(1 for node_type in node_types if node_type == "ERROR")
+        if not bool(getattr(root, "has_error", False)):
+            parsed_files += 1
+        symbol_records.extend(
+            extract_generic_tree_sitter_symbols(
+                repo_name,
+                relative_path,
+                language,
+                language_key,
+                root,
+                source_bytes,
+            )
+        )
+
+    unique_diagnostics = sorted(dict.fromkeys(diagnostics))
+    return {
+        "backend": "tree_sitter_tags",
+        "available": bool(available_languages),
+        "used": True,
+        "parsed": parsed_files == len(files) and not missing_languages,
+        "files": len(files),
+        "parsed_files": parsed_files,
+        "symbols": len(symbol_records),
+        "symbol_records": symbol_records,
+        "languages": sorted(available_languages),
+        "missing_languages": sorted(missing_languages),
+        "error_nodes": error_nodes,
+        "diagnostics": unique_diagnostics,
+        "latency_ms": elapsed_ms(started),
+        "samples": [
+            {
+                "path": symbol["path"],
+                "name": symbol["name"],
+                "kind": symbol["kind"],
+                "language": symbol["language"],
+            }
+            for symbol in symbol_records[:10]
+        ],
+    }
+
+
+def discover_tree_sitter_files(repo_map: Dict[str, object], *, path_prefixes: Sequence[str] = ()) -> List[str]:
+    files = []
+    for item in repo_map.get("files", []):
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        if should_skip_tree_sitter_file(path, item):
+            continue
+        language_key, _language = tree_sitter_language_for_path(path)
+        if not language_key:
+            continue
+        if path_prefixes and not matches_path_prefix(path, path_prefixes):
+            continue
+        files.append(path)
+    return sorted(dict.fromkeys(files))
+
+
+def should_skip_tree_sitter_file(path: str, item: Dict[str, object]) -> bool:
+    if bool(item.get("generated")) or is_generated_path(path):
+        return True
+    parts = set(Path(path).parts)
+    if parts & TREE_SITTER_EXCLUDED_PATH_PARTS:
+        return True
+    try:
+        size = int(item.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return size >= TREE_SITTER_MAX_BYTES
+
+
+def tree_sitter_language_for_path(path: str) -> Tuple[str | None, str | None]:
+    return TREE_SITTER_LANGUAGE_BY_EXTENSION.get(Path(path).suffix.lower(), (None, None))
+
+
+@lru_cache(maxsize=None)
+def load_generic_parser(language_key: str) -> Tuple[object | None, Tuple[str, ...]]:
+    diagnostics: List[str] = []
+
+    try:
+        module = importlib.import_module("tree_sitter_languages")
+        parser = module.get_parser(language_key)
+        return parser, ()
+    except Exception as exc:  # pragma: no cover - optional import path
+        diagnostics.append(f"tree_sitter_languages unavailable: {exc}")
+
+    try:
+        tree_sitter = importlib.import_module("tree_sitter")
+        parser = tree_sitter.Parser()
+    except Exception as exc:  # pragma: no cover - optional import path
+        diagnostics.append(f"tree_sitter unavailable: {exc}")
+        return None, tuple(diagnostics)
+
+    language = load_generic_language(language_key, diagnostics)
+    if language is None:
+        return None, tuple(diagnostics)
+
+    try:
+        if hasattr(parser, "set_language"):
+            parser.set_language(language)
+        else:  # tree-sitter >= 0.22
+            parser.language = language
+    except Exception as exc:  # pragma: no cover - optional backend
+        diagnostics.append(f"failed to configure tree-sitter parser: {exc}")
+        return None, tuple(diagnostics)
+    return parser, ()
+
+
+def load_generic_language(language_key: str, diagnostics: List[str]) -> object | None:
+    if language_key == "javascript":
+        candidates = [("tree_sitter_javascript", "language")]
+    elif language_key == "typescript":
+        candidates = [("tree_sitter_typescript", "language_typescript")]
+    elif language_key == "tsx":
+        candidates = [("tree_sitter_typescript", "language_tsx")]
+    else:
+        candidates = [
+            (f"tree_sitter_{language_key}", "language"),
+        ]
+
+    try:
+        tree_sitter = importlib.import_module("tree_sitter")
+    except Exception as exc:  # pragma: no cover - optional import path
+        diagnostics.append(f"tree_sitter unavailable while loading language: {exc}")
+        return None
+
+    for module_name, function_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:  # pragma: no cover - optional import path
+            diagnostics.append(f"{module_name} unavailable: {exc}")
+            continue
+
+        language_factory = getattr(module, function_name, None)
+        if language_factory is None:
+            diagnostics.append(f"{module_name}.{function_name} is unavailable")
+            continue
+
+        try:
+            language_value = language_factory()
+            if hasattr(tree_sitter, "Language") and language_value.__class__.__name__ != "Language":
+                return tree_sitter.Language(language_value)
+            return language_value
+        except Exception as exc:  # pragma: no cover - optional backend
+            diagnostics.append(f"failed loading {language_key} from {module_name}: {exc}")
+
+    return None
+
+
+def extract_generic_tree_sitter_symbols(
+    repo_name: str,
+    path: str,
+    language: str,
+    language_key: str,
+    root: object,
+    source_bytes: bytes,
+) -> List[Dict[str, object]]:
+    symbols: List[Dict[str, object]] = []
+    visit_generic_symbols(repo_name, path, language, language_key, root, source_bytes, (), None, symbols)
+    return sorted(
+        unique_symbol_records(symbols),
+        key=lambda item: (
+            item["qualified_name"].count("::"),
+            item["range"]["start_line"],
+            item["range"]["start_column"],
+            item["qualified_name"],
+        ),
+    )
+
+
+def visit_generic_symbols(
+    repo_name: str,
+    path: str,
+    language: str,
+    language_key: str,
+    node: object,
+    source_bytes: bytes,
+    scope_segments: Tuple[str, ...],
+    scope_qualified_name: Optional[str],
+    symbols: List[Dict[str, object]],
+) -> None:
+    symbol_kind = tree_sitter_symbol_kind(language_key, node)
+    child_scope_segments = scope_segments
+    child_scope_qualified_name = scope_qualified_name
+    if symbol_kind is not None:
+        name_node = generic_name_node(language_key, node)
+        name = generic_symbol_name(name_node, source_bytes) if name_node is not None else None
+        if name:
+            qualified_name = "::".join(scope_segments + (name,))
+            symbols.append(
+                make_generic_symbol_record(
+                    repo_name,
+                    path,
+                    language,
+                    language_key,
+                    node,
+                    name_node,
+                    source_bytes,
+                    symbol_kind,
+                    name,
+                    qualified_name,
+                    scope_qualified_name,
+                )
+            )
+            if symbol_kind in TREE_SITTER_SCOPING_KINDS:
+                child_scope_segments = scope_segments + (name,)
+                child_scope_qualified_name = qualified_name
+
+    for child in getattr(node, "children", []):
+        visit_generic_symbols(
+            repo_name,
+            path,
+            language,
+            language_key,
+            child,
+            source_bytes,
+            child_scope_segments,
+            child_scope_qualified_name,
+            symbols,
+        )
+
+
+def tree_sitter_symbol_kind(language_key: str, node: object) -> str | None:
+    node_type = str(getattr(node, "type", ""))
+    symbol_kind = TREE_SITTER_SYMBOL_NODE_TYPES.get(language_key, {}).get(node_type)
+    if symbol_kind is None:
+        return None
+    if node_type == "variable_declarator":
+        value_node = child_by_field(node, "value")
+        value_type = str(getattr(value_node, "type", ""))
+        if value_type in {"arrow_function", "function", "function_expression", "generator_function"}:
+            return "function"
+        if value_type in {"class", "class_expression"}:
+            return "class"
+        return None
+    return symbol_kind
+
+
+def make_generic_symbol_record(
+    repo_name: str,
+    path: str,
+    language: str,
+    language_key: str,
+    node: object,
+    name_node: object,
+    source_bytes: bytes,
+    kind: str,
+    name: str,
+    qualified_name: str,
+    scope_qualified_name: Optional[str],
+) -> Dict[str, object]:
+    symbol_range = node_range(node)
+    record = {
+        "symbol_id": stable_id(
+            "sym",
+            repo_name,
+            "tree_sitter_tags",
+            language_key,
+            path,
+            kind,
+            qualified_name,
+            symbol_range["start_line"],
+            symbol_range["end_line"],
+        ),
+        "repo": repo_name,
+        "path": path,
+        "language": language,
+        "kind": kind,
+        "name": name,
+        "qualified_name": qualified_name,
+        "range": symbol_range,
+        "selection_range": node_range(name_node),
+        "signature": signature_for_node(node, source_bytes),
+        "scope": {
+            "symbol_id": None,
+            "qualified_name": scope_qualified_name,
+            "path": path,
+        },
+        "tree_sitter": {
+            "language": language_key,
+            "node_type": str(getattr(node, "type", "")),
+            "name_node_type": str(getattr(name_node, "type", "")),
+        },
+    }
+    return normalize_symbol_record(record, provider="tree_sitter_tags", confidence=0.78)
+
+
+def generic_name_node(language_key: str, node: object) -> object | None:
+    field_names = ("key",) if language_key == "yaml" else ("name", "key")
+    for field_name in field_names:
+        candidate = child_by_field(node, field_name)
+        if candidate is not None:
+            return candidate
+    for child in getattr(node, "children", []):
+        if str(getattr(child, "type", "")) in GENERIC_NAME_NODE_TYPES:
+            return child
+    return None
+
+
+def child_by_field(node: object, field_name: str) -> object | None:
+    if not hasattr(node, "child_by_field_name"):
+        return None
+    try:
+        return node.child_by_field_name(field_name)
+    except Exception:  # pragma: no cover - depends on optional backend API shape
+        return None
+
+
+def generic_symbol_name(name_node: object, source_bytes: bytes) -> Optional[str]:
+    text = node_text(name_node, source_bytes).strip()
+    text = text.strip("\"'")
+    text = re.sub(r"\s+", " ", text)
+    if not text or "\n" in text or len(text) > 120:
+        return None
+    return text
+
+
+def unique_symbol_records(symbols: Iterable[Dict[str, object]]) -> List[Dict[str, object]]:
+    seen = set()
+    unique = []
+    for symbol in symbols:
+        symbol_id = symbol["symbol_id"]
+        if symbol_id in seen:
+            continue
+        seen.add(symbol_id)
+        unique.append(symbol)
+    return unique
+
+
+def stable_id(prefix: str, *parts: object) -> str:
+    payload = "\x1f".join(str(part) for part in parts)
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    return f"{prefix}:{digest}"
+
+
+def matches_path_prefix(relative_path: str, path_prefixes: Sequence[str]) -> bool:
+    return any(relative_path == prefix or relative_path.startswith(f"{prefix.rstrip('/')}/") for prefix in path_prefixes)
+
+
+def elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
 
 
 def probe_tree_sitter(path: Path, source: str) -> Dict[str, object]:

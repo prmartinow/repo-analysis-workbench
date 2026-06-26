@@ -5,6 +5,17 @@ description = "Code-intelligence and retrieval workbench for local source reposi
 requires-python = ">=3.10"
 dependencies = ["lmdb>=1.4", "ryugraph>=25.9.2"]
 
+[project.optional-dependencies]
+tree-sitter = [
+    "tree-sitter>=0.25",
+    "tree-sitter-bash",
+    "tree-sitter-go",
+    "tree-sitter-javascript",
+    "tree-sitter-python",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
 
