@@ -340,6 +340,7 @@ def build_documents(
     emit("directory_rollups_built", directories=len(directory_rollups), total_files=len(source_files))
 
     documents_emitted = 1
+    source_line_cache: Dict[str, List[str]] = {}
 
     yield {
         "doc_id": stable_id("doc", repo_name, "repo"),
@@ -562,7 +563,7 @@ def build_documents(
         }
 
         body_kind = symbol_body_kind(symbol)
-        body_text = extract_symbol_chunk(repo_root, symbol)
+        body_text = extract_symbol_chunk(repo_root, symbol, source_line_cache)
         if body_kind and body_text:
             documents_emitted += 1
             yield {
@@ -778,12 +779,18 @@ def symbol_body_kind(symbol: Dict[str, object]) -> str | None:
     return None
 
 
-def extract_symbol_chunk(repo_root: Path, symbol: Dict[str, object]) -> str:
-    path = repo_root / str(symbol.get("path") or "")
-    try:
-        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError:
-        return ""
+def extract_symbol_chunk(repo_root: Path, symbol: Dict[str, object], source_line_cache: Dict[str, List[str]] | None = None) -> str:
+    symbol_path = str(symbol.get("path") or "")
+    if source_line_cache is not None and symbol_path in source_line_cache:
+        lines = source_line_cache[symbol_path]
+    else:
+        path = repo_root / symbol_path
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            lines = []
+        if source_line_cache is not None:
+            source_line_cache[symbol_path] = lines
     span = symbol.get("span") or symbol.get("range") or {}
     start_line = max(int(span.get("start_line") or 1), 1)
     end_line = max(int(span.get("end_line") or start_line), start_line)

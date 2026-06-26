@@ -369,6 +369,15 @@ def build_qwen_embedding_payload(
             total_docs_hint = int(search_batch[0]["_total_docs"])
         for batch in batched(search_batch, BATCH_SIZE):
             batch_index += 1
+            emit(
+                "qwen_embed_batch_started",
+                provider="qwen",
+                model=model_name,
+                batch_index=batch_index,
+                batch_docs=len(batch),
+                processed_docs=processed_docs,
+                total_docs=total_docs_hint,
+            )
             vectors = embed_with_qwen([str(document["content"] or "") for document in batch], model_name)
             for document, vector in zip(batch, vectors):
                 embedded_documents.append(

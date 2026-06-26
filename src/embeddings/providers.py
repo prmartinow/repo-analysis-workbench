@@ -96,6 +96,7 @@ def embed_with_qwen(texts: Sequence[str], model: str) -> List[List[float]]:
         headers={
             "Content-Type": "application/json",
             "X-Caller": "repo-analysis",
+            "X-Workload": "batch",
         },
         method="POST",
     )
