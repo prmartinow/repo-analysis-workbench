@@ -32,15 +32,23 @@ from symbols.indexer import timestamp_now
 SCHEMA_VERSION = "0.4.0"
 EVAL_CACHE_SCHEMA_VERSION = "0.1.0"
 DEFAULT_MODES = (
+    "semantic_graph_rerank",
+    "semantic_graph_rerank_summaries",
+    "selective_on",
+    "selective_off",
+)
+DISABLED_NO_EMBEDDING_MODES = {
     "lexical_only",
     "lexical_graph",
     "lexical_graph_rerank",
     "lexical_graph_rerank_summaries",
-    "lexical_graph_vector_rerank",
+}
+SUMMARY_MODES = {
+    "semantic_graph_rerank_summaries",
     "lexical_graph_vector_rerank_summaries",
     "selective_on",
     "selective_off",
-)
+}
 DEFAULT_BENCHMARKS: List[Dict[str, object]] = []
 
 DEFAULT_INTERACTIVE_SCENARIOS: List[Dict[str, object]] = []
@@ -374,11 +382,9 @@ def run_case(
     limit: int,
 ) -> Dict[str, object]:
     started = time.perf_counter()
-    if mode == "lexical_only":
-        search_backend = get_search_backend(str(search_root.resolve()), str(case["repo"]))
-        selected = search_backend.search(str(case["query"]), limit=limit, kinds=("symbol", "file"))
-        context_summary = {"mode": "lexical_only"}
-    elif mode == "embedding_only":
+    if mode in DISABLED_NO_EMBEDDING_MODES:
+        raise ValueError(f"Benchmark mode {mode} is disabled because embeddings are mandatory")
+    if mode == "embedding_only":
         selected = query_embedding_index(search_root, case["repo"], case["query"], limit=limit)
         context_summary = {"mode": "embedding_only"}
     else:
@@ -389,10 +395,9 @@ def run_case(
             case["repo"],
             case["query"],
             limit=limit,
-            use_graph=mode != "lexical_only",
-            use_embeddings=mode in {"lexical_graph_vector_rerank", "lexical_graph_vector_rerank_summaries", "selective_on", "selective_off"},
-            use_rerank=mode not in {"lexical_graph", "lexical_only"},
-            use_summaries=mode in {"lexical_graph_rerank_summaries", "lexical_graph_vector_rerank_summaries", "selective_on", "selective_off"},
+            use_graph=True,
+            use_rerank=True,
+            use_summaries=mode in SUMMARY_MODES,
             selective_retrieval=mode == "selective_on",
         )
         selected = context["selected_context"]

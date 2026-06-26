@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import urllib.error
+import urllib.request
 from pathlib import PurePosixPath
 from typing import Dict, Iterable, List
 
@@ -24,6 +28,11 @@ KIND_PRIORITY = {
 CALLABLE_SYMBOL_KINDS = {"function", "method", "associated_function"}
 NOMINAL_SYMBOL_KINDS = {"trait", "struct", "enum", "type"}
 LOCAL_LIKE_KINDS = {"field", "local", "parameter", "variable"}
+QWEN_RERANK_URL = "http://127.0.0.1:18200/rerank"
+QWEN_RERANK_MAX_CANDIDATES = 5
+QWEN_RERANK_PROVIDERS = {"qwen", "qwen-local", "local-qwen", "auto", ""}
+HEURISTIC_RERANK_PROVIDERS = {"heuristic", "builtin", "local", "none", "off", "false"}
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
 def identifier_terms(value: str) -> List[str]:
@@ -157,7 +166,7 @@ def rerank_candidates(
         updated["score"] = round(score, 6)
         ranked.append(updated)
 
-    return sorted(
+    heuristic_ranked = sorted(
         ranked,
         key=lambda item: (
             -float(item["score"]),
@@ -166,3 +175,86 @@ def rerank_candidates(
             str(item.get("qualified_name") or item.get("title") or ""),
         ),
     )
+    return maybe_qwen_rerank(heuristic_ranked, query_text)
+
+
+def maybe_qwen_rerank(ranked: List[Dict[str, object]], query_text: str) -> List[Dict[str, object]]:
+    provider = os.environ.get("REPO_ANALYSIS_RERANK_PROVIDER", "qwen").strip().lower()
+    if provider in HEURISTIC_RERANK_PROVIDERS:
+        return ranked
+    if provider not in QWEN_RERANK_PROVIDERS:
+        raise ValueError(f"Unsupported rerank provider: {provider}")
+    if not ranked or not query_text:
+        return ranked
+
+    limit = min(
+        int(os.environ.get("REPO_ANALYSIS_QWEN_RERANK_LIMIT", QWEN_RERANK_MAX_CANDIDATES)),
+        QWEN_RERANK_MAX_CANDIDATES,
+        len(ranked),
+    )
+    top = ranked[:limit]
+    documents = [candidate_to_rerank_document(candidate) for candidate in top]
+    try:
+        results = qwen_rerank(query_text, documents)
+    except RuntimeError:
+        if allow_heuristic_rerank_fallback():
+            return ranked
+        raise
+    if not results:
+        if allow_heuristic_rerank_fallback():
+            return ranked
+        raise RuntimeError("Qwen rerank returned no results")
+
+    reranked: List[Dict[str, object]] = []
+    seen_indexes = set()
+    for result in results:
+        index = int(result.get("index", -1))
+        if index < 0 or index >= len(top) or index in seen_indexes:
+            continue
+        seen_indexes.add(index)
+        updated = dict(top[index])
+        metadata = dict(updated.get("metadata", {}) or {})
+        metadata["qwen_rerank_score"] = float(result.get("score") or 0.0)
+        updated["metadata"] = metadata
+        updated["score"] = round(float(updated.get("score") or 0.0) + float(result.get("score") or 0.0), 6)
+        reranked.append(updated)
+
+    for index, candidate in enumerate(top):
+        if index not in seen_indexes:
+            reranked.append(candidate)
+    return reranked + ranked[limit:]
+
+
+def allow_heuristic_rerank_fallback() -> bool:
+    return os.environ.get("REPO_ANALYSIS_ALLOW_HEURISTIC_RERANK_FALLBACK", "").strip().lower() in TRUTHY_VALUES
+
+
+def candidate_to_rerank_document(candidate: Dict[str, object]) -> str:
+    parts = [
+        str(candidate.get("qualified_name") or candidate.get("name") or ""),
+        str(candidate.get("path") or ""),
+        str(candidate.get("title") or ""),
+        str(candidate.get("preview") or ""),
+    ]
+    return "\n".join(part for part in parts if part)[:2500]
+
+
+def qwen_rerank(query: str, documents: List[str]) -> List[Dict[str, object]]:
+    request = urllib.request.Request(
+        os.environ.get("REPO_ANALYSIS_QWEN_RERANK_URL", QWEN_RERANK_URL),
+        data=json.dumps({"query": query, "documents": documents}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Caller": "repo-analysis",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Qwen rerank request failed: {exc.code} {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Qwen rerank request failed: {exc}") from exc
+    return list(payload.get("results", []))

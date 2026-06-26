@@ -8,7 +8,6 @@ from backends.metadata_store import get_metadata_store
 from backends.search_backend import get_search_backend
 from common.retrieval import (
     BODY_STAGE_KINDS,
-    EMBEDDING_MIN_TOKENS,
     EXACT_SYMBOL_MAX_TOKENS,
     GRAPH_EDGE_BONUS,
     GRAPH_STAGE_EDGE_TYPES,
@@ -85,7 +84,6 @@ def retrieve_context(
     depth: int = 1,
     kinds: Sequence[str] = (),
     use_graph: bool = True,
-    use_embeddings: bool = True,
     use_rerank: bool = True,
     use_summaries: bool = False,
     selective_retrieval: bool = True,
@@ -213,11 +211,10 @@ def retrieve_context(
                 )
                 add_stage_results(candidates, body_results, stage_reason="body")
 
-            if use_embeddings and gate["use_embeddings"]:
-                embedding_results = query_embedding_index(search_root, repo_name, query, limit=max(limit, 5))
-                for result in embedding_results:
-                    annotate_scope(result, summary_scopes)
-                add_stage_results(candidates, embedding_results, stage_reason="embedding")
+            embedding_results = query_embedding_index(search_root, repo_name, query, limit=max(limit, 5))
+            for result in embedding_results:
+                annotate_scope(result, summary_scopes)
+            add_stage_results(candidates, embedding_results, stage_reason="embedding")
 
         if use_summaries:
             with trace_operation("retrieve_context.summary_enrichment"):
@@ -248,7 +245,7 @@ def retrieve_context(
                 "embedding_results": len(embedding_results),
                 "selected": len(ranked),
                 "graph_enabled": bool(use_graph and gate["use_graph"]),
-                "embeddings_enabled": bool(use_embeddings and gate["use_embeddings"]),
+                "embeddings_enabled": bool(gate["embeddings_required"]),
                 "body_enabled": bool(gate["use_body"]),
                 "rerank_enabled": use_rerank,
                 "summaries_enabled": bool(use_summaries),
@@ -594,7 +591,7 @@ def retrieval_gate(
             "use_global_symbol_search": True,
             "use_graph": True,
             "use_body": True,
-            "use_embeddings": True,
+            "embeddings_required": True,
         }
 
     exact_symbol_hit = has_exact_symbol_hit(query, exact_symbol_results)
@@ -608,7 +605,7 @@ def retrieval_gate(
             "use_global_symbol_search": False,
             "use_graph": False,
             "use_body": False,
-            "use_embeddings": False,
+            "embeddings_required": True,
         }
 
     if exact_symbol_hit and token_count <= EXACT_SYMBOL_MAX_TOKENS:
@@ -618,7 +615,7 @@ def retrieval_gate(
             "use_global_symbol_search": False,
             "use_graph": bool(query_profile["explicit_graph"]),
             "use_body": bool(query_profile["explicit_body"]),
-            "use_embeddings": False,
+            "embeddings_required": True,
         }
 
     if query_profile["explicit_statement"]:
@@ -628,7 +625,7 @@ def retrieval_gate(
             "use_global_symbol_search": True,
             "use_graph": True,
             "use_body": True,
-            "use_embeddings": False,
+            "embeddings_required": True,
         }
 
     exploratory = query_profile["intent"] == "exploration"
@@ -638,7 +635,7 @@ def retrieval_gate(
         "use_global_symbol_search": not bool(summary_results) or query_profile["explicit_symbol"],
         "use_graph": exploratory or query_profile["explicit_graph"] or bool(exact_symbol_results),
         "use_body": exploratory or query_profile["explicit_body"] or bool(exact_symbol_results),
-        "use_embeddings": exploratory and token_count >= EMBEDDING_MIN_TOKENS and not summary_results[:1],
+        "embeddings_required": True,
     }
 
 

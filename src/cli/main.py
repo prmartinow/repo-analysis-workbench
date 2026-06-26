@@ -227,11 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_embeddings = subparsers.add_parser(
         "build-embeddings",
-        help="Build the optional embedding sidecar over search documents.",
+        help="Build the mandatory semantic embedding sidecar over search documents.",
     )
     add_search_root_arg(build_embeddings)
     build_embeddings.add_argument("--repo", action="append")
-    build_embeddings.add_argument("--provider", choices=("auto", "hashing", "openai"), default="auto")
+    build_embeddings.add_argument("--provider", choices=("auto", "hashing", "openai", "qwen"), default="qwen")
     build_embeddings.add_argument("--model")
 
     run_eval = subparsers.add_parser(

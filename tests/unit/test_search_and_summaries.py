@@ -1,4 +1,6 @@
 import json
+import inspect
+import os
 import sys
 import tempfile
 import unittest
@@ -39,6 +41,7 @@ from backends.metadata_store import get_metadata_store
 from backends.tantivy.search import TantivySearchBackend, build_query_variants, rerank_search_results
 from common.telemetry import reset_telemetry, snapshot_telemetry
 from embeddings.indexer import build_embedding_index, query_embedding_index
+from embeddings.providers import resolve_embedding_provider
 from evaluation.harness import export_benchmark_prompts, run_benchmarks, score_answer_bundles, score_external_answers
 from evaluation.harness import benchmark_interactive_commands
 from graph.builder import build_graph_artifact
@@ -158,7 +161,7 @@ def seed_demo_workspace(root: Path) -> dict[str, Path]:
     graph = build_graph_artifact(symbol_index)
     write_graph_database(graph_root, "demo", graph)
     build_search_index("demo", repo_root, raw_root, parsed_root, search_root)
-    build_embedding_index(search_root, "demo")
+    build_embedding_index(search_root, "demo", provider="hashing")
     summary_artifacts = build_summary_artifacts("demo", raw_root, parsed_root, graph_root)
     sync_summary_state(
         parsed_root,
@@ -187,6 +190,63 @@ def seed_demo_workspace(root: Path) -> dict[str, Path]:
 
 
 class SearchAndSummaryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._rerank_env = mock.patch.dict(os.environ, {"REPO_ANALYSIS_RERANK_PROVIDER": "heuristic"})
+        self._rerank_env.start()
+
+    def tearDown(self) -> None:
+        self._rerank_env.stop()
+
+    def test_embedding_provider_defaults_to_qwen(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_embedding_provider()["provider"], "qwen")
+            self.assertEqual(resolve_embedding_provider("auto")["provider"], "qwen")
+
+    def test_embedding_index_is_required_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            search_root = Path(tmpdir) / "search"
+            with self.assertRaisesRegex(FileNotFoundError, "Run build-embeddings"):
+                query_embedding_index(search_root, "demo", "helper answer")
+
+    def test_retrieve_context_has_no_embedding_bypass(self) -> None:
+        self.assertNotIn("use_embeddings", inspect.signature(retrieve_context).parameters)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = seed_demo_workspace(Path(tmpdir))
+            (paths["search_root"] / "demo" / "embedding_index.json").unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "Run build-embeddings"):
+                retrieve_context(
+                    paths["search_root"],
+                    paths["graph_root"],
+                    paths["parsed_root"],
+                    "demo",
+                    "helper answer",
+                    limit=5,
+                )
+
+    def test_qwen_reranker_failure_is_not_silently_downgraded(self) -> None:
+        candidates = [
+            {
+                "kind": "symbol",
+                "name": "helper",
+                "qualified_name": "demo::helper",
+                "path": "src/lib.rs",
+                "score": 1.0,
+                "metadata": {"kind": "function"},
+            }
+        ]
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "REPO_ANALYSIS_RERANK_PROVIDER": "qwen",
+                "REPO_ANALYSIS_ALLOW_HEURISTIC_RERANK_FALLBACK": "",
+            },
+        ):
+            with mock.patch("rerank.fusion.qwen_rerank", side_effect=RuntimeError("rerank service down")):
+                with self.assertRaisesRegex(RuntimeError, "rerank service down"):
+                    rerank_candidates(candidates, ["helper"])
+
     def test_reranker_prefers_trait_symbol_over_field_for_trait_queries(self) -> None:
         candidates = [
             {
@@ -646,6 +706,8 @@ class SearchAndSummaryTest(unittest.TestCase):
                 limit=5,
             )
             self.assertGreater(len(context["selected_context"]), 0)
+            self.assertTrue(context["summary"]["embeddings_enabled"])
+            self.assertTrue(context["summary"]["retrieval_gate"]["embeddings_required"])
             self.assertTrue(any(item.get("name") == "answer" for item in context["selected_context"]))
 
             symbol_lookup = find_symbol(paths["search_root"], "demo", "answer", limit=5)
@@ -762,7 +824,7 @@ class SearchAndSummaryTest(unittest.TestCase):
                 paths["parsed_root"],
                 eval_root,
                 repos=("demo",),
-                modes=("lexical_graph_rerank_summaries",),
+                modes=("semantic_graph_rerank_summaries",),
                 benchmarks=[
                     {
                         "name": "demo_answer",
@@ -781,6 +843,32 @@ class SearchAndSummaryTest(unittest.TestCase):
             self.assertGreater(run["answer_quality"]["score"], 0.5)
             self.assertIn("avg_answer_score", payload["summary"]["modes"][0])
             self.assertTrue((eval_root / "benchmarks.json").exists())
+
+    def test_benchmark_harness_rejects_no_embedding_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            paths = seed_demo_workspace(root)
+
+            with self.assertRaisesRegex(ValueError, "embeddings are mandatory"):
+                run_benchmarks(
+                    paths["search_root"],
+                    paths["graph_root"],
+                    paths["parsed_root"],
+                    root / "eval",
+                    repos=("demo",),
+                    modes=("lexical_only",),
+                    benchmarks=[
+                        {
+                            "name": "demo_answer",
+                            "repo": "demo",
+                            "task_type": "symbol_lookup",
+                            "query": "answer helper",
+                            "expected_path": "src/lib.rs",
+                            "expected_name": "answer",
+                            "expected_terms": ["answer", "helper"],
+                        }
+                    ],
+                )
 
     def test_interactive_benchmark_report_captures_stage1_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

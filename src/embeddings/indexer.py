@@ -12,7 +12,9 @@ from common.text import tokenize
 from embeddings.providers import (
     DEFAULT_HASHING_MODEL,
     embed_with_openai,
+    embed_with_qwen,
     openai_embeddings_available,
+    qwen_embeddings_available,
     resolve_embedding_provider,
 )
 from symbols.indexer import timestamp_now
@@ -73,6 +75,13 @@ def build_embedding_index(
 
     if provider_name == "openai":
         payload = build_openai_embedding_payload(
+            search_root,
+            repo_name,
+            model_name,
+            progress_callback=progress_callback,
+        )
+    elif provider_name == "qwen":
+        payload = build_qwen_embedding_payload(
             search_root,
             repo_name,
             model_name,
@@ -323,10 +332,93 @@ def build_openai_embedding_payload(
     }
 
 
-def query_embedding_index(search_root: Path, repo_name: str, query: str, *, limit: int = 10) -> List[Dict[str, object]]:
+def build_qwen_embedding_payload(
+    search_root: Path,
+    repo_name: str,
+    model_name: str,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> Dict[str, object]:
+    if not qwen_embeddings_available():
+        raise RuntimeError("Qwen embedding provider requested but no endpoint URL is configured")
+
+    def emit(event: str, **extra: object) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "event": event,
+                "repo": repo_name,
+                **extra,
+            }
+        )
+
+    emit("qwen_embed_started", provider="qwen", model=model_name)
+
+    embedded_documents = []
+    processed_docs = 0
+    batch_index = 0
+
+    for search_batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
+        for batch in batched(search_batch, BATCH_SIZE):
+            batch_index += 1
+            vectors = embed_with_qwen([str(document["content"] or "") for document in batch], model_name)
+            for document, vector in zip(batch, vectors):
+                embedded_documents.append(
+                    {
+                        "doc_id": document["doc_id"],
+                        "kind": document["kind"],
+                        "path": document["path"],
+                        "name": document["name"],
+                        "qualified_name": document["qualified_name"],
+                        "symbol_id": document["symbol_id"],
+                        "title": document["title"],
+                        "preview": document["preview"],
+                        "norm": 1.0 if vector else 0.0,
+                        "vector": [round(float(value), 8) for value in vector],
+                    }
+                )
+            processed_docs += len(batch)
+            emit(
+                "qwen_embed_progress",
+                provider="qwen",
+                model=model_name,
+                batch_index=batch_index,
+                batch_docs=len(batch),
+                processed_docs=processed_docs,
+            )
+
+    dimensions = len(embedded_documents[0]["vector"]) if embedded_documents else 0
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "repo": repo_name,
+        "generated_at": timestamp_now(),
+        "provider": "qwen",
+        "model": model_name,
+        "model_backed": True,
+        "dimensions": dimensions,
+        "vector_format": "dense",
+        "documents": embedded_documents,
+        "summary": {
+            "documents": len(embedded_documents),
+            "nonzero_dimensions": dimensions * len(embedded_documents),
+        },
+    }
+
+
+def query_embedding_index(
+    search_root: Path,
+    repo_name: str,
+    query: str,
+    *,
+    limit: int = 10,
+) -> List[Dict[str, object]]:
     index_path = search_root / repo_name / "embedding_index.json"
     if not index_path.exists():
-        return []
+        raise FileNotFoundError(
+            f"Missing embedding index for {repo_name}: {index_path}. "
+            "Run build-embeddings before semantic retrieval."
+        )
 
     with index_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
@@ -340,8 +432,13 @@ def query_embedding_index(search_root: Path, repo_name: str, query: str, *, limi
     vector_format = str(payload.get("vector_format") or "sparse")
     if provider == "openai":
         if not openai_embeddings_available():
-            return []
+            raise RuntimeError("Embedding index uses OpenAI, but OPENAI_API_KEY is not set")
         query_vector = embed_with_openai([query], str(payload["model"]))[0]
+        query_norm = 1.0 if query_vector else 0.0
+    elif provider == "qwen":
+        if not qwen_embeddings_available():
+            raise RuntimeError("Embedding index uses Qwen, but no endpoint URL is configured")
+        query_vector = embed_with_qwen([query], str(payload["model"]))[0]
         query_norm = 1.0 if query_vector else 0.0
     else:
         raw_query_vector = embed_tokens(query_tokens, None, max(len(documents), 1))

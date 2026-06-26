@@ -36,7 +36,6 @@ def plan_query(
             task,
             limit=min(max(limit, 3), 6),
             use_graph=False,
-            use_embeddings=False,
             use_rerank=False,
             use_summaries=True,
             selective_retrieval=False,

@@ -10,7 +10,7 @@ The system turns a repository into structured local artifacts that an LLM coding
 - Tantivy lexical, identifier, and path search
 - RyuGraph structural traversal
 - deterministic summaries
-- optional embedding sidecars
+- mandatory local-Qwen embedding sidecars
 - retrieval planning, answer-bundle preparation, and evaluation commands
 
 This is best described as a **code-intelligence and retrieval workbench**. It includes a repository-memory layer, but memory is not the whole system; the core value is the combination of exact parsed metadata, lexical retrieval, graph-backed expansion, summaries, and evaluation for agentic code understanding.
@@ -21,7 +21,7 @@ This is best described as a **code-intelligence and retrieval workbench**. It in
 - **Tantivy** for fast lexical, identifier, and path retrieval.
 - **LMDB** for exact metadata, symbol bodies, summaries, and evaluation cache.
 - **RyuGraph** for graph storage and traversal.
-- **Optional embeddings** as a sidecar, not the source of truth.
+- **Mandatory local-Qwen embeddings** as a batch-built semantic sidecar.
 - **Native Rust worker** for hot-path parsing and indexing support.
 
 ## Basic Workflow
@@ -49,6 +49,22 @@ Build artifacts for one repository:
 ./scripts/export_summaries.sh --repo target-repo
 ./scripts/build_embeddings.sh --repo target-repo
 ```
+
+Embedding retrieval expects the batch-built sidecar to exist. `prepare-context`, `prepare-answer-bundle`, and benchmark retrieval always query this sidecar; missing embeddings are treated as an artifact build failure. The default provider is the local RPC Qwen inference service:
+
+```bash
+./scripts/build_embeddings.sh --repo target-repo --provider qwen --model text
+```
+
+The default local endpoint is `http://127.0.0.1:18200/v1/embeddings`; override it with `REPO_ANALYSIS_QWEN_EMBEDDINGS_URL` if needed.
+
+The local Qwen reranker is enabled by default for the top retrieval candidates:
+
+```bash
+python3 src/cli/main.py prepare-answer-bundle --repo target-repo "How does retry handling work?"
+```
+
+The reranker uses `http://127.0.0.1:18200/rerank` by default and reranks at most five top candidates. If the local service is unavailable, retrieval fails loudly unless `REPO_ANALYSIS_ALLOW_HEURISTIC_RERANK_FALLBACK=1` is set.
 
 Query the repository:
 

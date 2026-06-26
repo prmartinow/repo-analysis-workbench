@@ -1,9 +1,5 @@
 modes:
-  - lexical_only
-  - lexical_graph
-  - lexical_graph_rerank
-  - lexical_graph_rerank_summaries
-  - lexical_graph_vector_rerank
-  - lexical_graph_vector_rerank_summaries
+  - semantic_graph_rerank
+  - semantic_graph_rerank_summaries
   - selective_on
   - selective_off
