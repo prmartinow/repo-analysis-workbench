@@ -25,6 +25,7 @@ from parsers.rust import (
 )
 from parsers.rust_analyzer_backend import aggregate_rust_analyzer_probes, probe_rust_analyzer
 from parsers.rustc_backend import aggregate_rustc_probes, probe_rust_ast
+from parsers.ctags_backend import probe_universal_ctags
 from parsers.tree_sitter_backend import aggregate_tree_sitter_probes, probe_tree_sitter
 from symbols.schema import normalize_symbol_record
 
@@ -174,9 +175,11 @@ def build_symbol_index(
     cache_root: Path | None = None,
 ) -> Dict[str, object]:
     manifest = load_raw_manifest(raw_root, repo_name)
+    repo_map = load_raw_repo_map(raw_root, repo_name)
     parser_roots = manifest.get("parser_relevant_source_roots", [])
     workspace_index = build_workspace_index(repo_root)
-    rust_files = discover_rust_files(repo_root, parser_roots, normalize_prefixes(path_prefixes))
+    normalized_path_prefixes = normalize_prefixes(path_prefixes)
+    rust_files = discover_rust_files(repo_root, parser_roots, normalized_path_prefixes)
     run_started = time.perf_counter()
     contexts: List[ParsedFileContext] = []
     backend_failures: DefaultDict[str, int] = defaultdict(int)
@@ -204,7 +207,7 @@ def build_symbol_index(
                 "repo": repo_name,
                 "parser_roots": len(parser_roots),
                 "rust_files_total": len(rust_files),
-                "path_prefixes": list(normalize_prefixes(path_prefixes)),
+                "path_prefixes": list(normalized_path_prefixes),
                 "rss_mb": current_rss_mb(),
                 "elapsed_ms": 0.0,
             }
@@ -293,6 +296,22 @@ def build_symbol_index(
     enrich_symbol_semantics(symbol_records, reference_records, statement_records, resolution_index)
     emit_stage_progress("enriching_symbol_artifact_metadata")
     enrich_symbol_artifact_metadata(symbol_records, statement_records)
+    emit_stage_progress("probing_universal_ctags")
+    ctags_probe = probe_universal_ctags(
+        repo_name,
+        repo_root,
+        repo_map,
+        path_prefixes=normalized_path_prefixes,
+    )
+    ctags_symbol_records = list(ctags_probe.get("symbol_records", []))
+    if ctags_symbol_records:
+        symbol_records.extend(ctags_symbol_records)
+        merge_provider_file_records(
+            file_records,
+            repo_map,
+            ctags_symbol_records,
+            provider="universal_ctags",
+        )
     emit_stage_progress("checking_duplicate_symbol_ids")
     duplicate_symbol_ids = find_duplicate_ids(symbol_records, "symbol_id")
     if duplicate_symbol_ids:
@@ -310,6 +329,7 @@ def build_symbol_index(
         "rust_analyzer_lsp": aggregate_rust_analyzer_probes(
             [context.backend_probes["rust_analyzer_lsp"] for context in contexts]
         ),
+        "universal_ctags": provider_probe_summary(ctags_probe),
     }
 
     emit_stage_progress("rolling_up_summary_counts")
@@ -333,7 +353,8 @@ def build_symbol_index(
         "references": reference_records,
         "statements": statement_records,
         "summary": {
-            "rust_files": len(file_records),
+            "files": len(file_records),
+            "rust_files": sum(1 for item in file_records if item.get("language") == "Rust"),
             "symbols": len(symbol_records),
             "imports": len(import_records),
             "references": len(reference_records),
@@ -1883,6 +1904,51 @@ def load_raw_manifest(raw_root: Path, repo_name: str) -> Dict[str, object]:
         )
     with manifest_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def load_raw_repo_map(raw_root: Path, repo_name: str) -> Dict[str, object]:
+    repo_map_path = raw_root / repo_name / "repo_map.json"
+    if not repo_map_path.exists():
+        return {"files": [], "directories": []}
+    with repo_map_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def merge_provider_file_records(
+    file_records: List[Dict[str, object]],
+    repo_map: Dict[str, object],
+    provider_symbols: Sequence[Dict[str, object]],
+    *,
+    provider: str,
+) -> None:
+    existing_paths = {str(item.get("path") or "") for item in file_records}
+    repo_files_by_path = {str(item.get("path") or ""): item for item in repo_map.get("files", [])}
+    symbols_by_path: DefaultDict[str, List[Dict[str, object]]] = defaultdict(list)
+    for symbol in provider_symbols:
+        symbols_by_path[str(symbol.get("path") or "")].append(symbol)
+
+    for path, symbols_for_path in sorted(symbols_by_path.items()):
+        if not path or path in existing_paths:
+            continue
+        file_record = repo_files_by_path.get(path, {})
+        file_records.append(
+            {
+                "path": path,
+                "crate": None,
+                "package_name": None,
+                "module_path": None,
+                "language": file_record.get("language") or symbols_for_path[0].get("language"),
+                "symbols": len(symbols_for_path),
+                "imports": 0,
+                "primary_parser_backend": provider,
+                "content_hash": file_record.get("content_hash"),
+            }
+        )
+        existing_paths.add(path)
+
+
+def provider_probe_summary(probe: Dict[str, object]) -> Dict[str, object]:
+    return {key: value for key, value in probe.items() if key != "symbol_records"}
 
 
 def build_workspace_index(repo_root: Path) -> WorkspaceIndex:

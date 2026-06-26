@@ -23,7 +23,7 @@ The implementation is complete only when repo-analysis can:
 |---|---|---|---|
 | 1 | Retrieval benchmark cases and metrics | Done | `run-benchmarks` loads JSON/JSONL cases, rejects empty case sets, and reports recall@k, MRR, and NDCG. |
 | 2 | Provider-neutral symbol records | Done | Rust symbols are normalized through provider-neutral records with `provider`, `language`, `kind`, `path`, `name`, `qualified_name`, `range`, `scope`, and `confidence`. |
-| 3 | Universal Ctags provider | Not started | Non-Rust repos produce symbols from `ctags --output-format=json`; provider metadata records ctags provenance. |
+| 3 | Universal Ctags provider | Done | Non-Rust repos produce provider-normalized symbols from `ctags --output-format=json`; provider metadata records ctags provenance. |
 | 4 | Generic non-Rust summary fallback | Not started | Repos with zero symbols still get useful project, directory, and file summaries from raw inventory. |
 | 5 | Tree-sitter tag provider | Not started | Python, Go, JS/TS, shell, YAML/config, and Rust can be enriched with tree-sitter tag records where grammars are available. |
 | 6 | SCIP JSON importer | Not started | `.scip` files can be imported into symbols, references, and graph edges. |
@@ -384,10 +384,10 @@ At the start and end of each implementation session:
 
 Overall status: not complete.
 
-Current next milestone: Universal Ctags provider.
+Current next milestone: generic non-Rust summary fallback.
 
-Current risk: non-Rust architecture analysis is weak until ctags and
-tree-sitter populate symbol and summary artifacts.
+Current risk: non-Rust summaries are still thin until inventory fallback and
+tree-sitter enrich file, directory, and symbol context.
 
 Latest verification:
 
@@ -395,4 +395,8 @@ Latest verification:
 python3 -m unittest discover tests/unit
 python3 src/cli/main.py run-benchmarks --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --eval-root /mnt/workspace/code-intel/repo-analysis-pilot/eval --cases-root data/eval/cases --repo agent-kit --mode lexical_only --limit 5
 python3 -m py_compile src/symbols/schema.py src/symbols/indexer.py src/graph/builder.py src/search/indexer.py src/summaries/builder.py
+sudo apt-get install -y universal-ctags
+python3 src/cli/main.py build-index --workspace-root "/mnt/workspace/AI tooling" --raw-root /mnt/workspace/code-intel/repo-analysis-pilot/raw --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --repo agent-kit --progress-interval 1
+python3 src/cli/main.py build-search --workspace-root "/mnt/workspace/AI tooling" --raw-root /mnt/workspace/code-intel/repo-analysis-pilot/raw --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --repo agent-kit
+python3 src/cli/main.py find-symbol --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --repo agent-kit mustExist --limit 5
 ```

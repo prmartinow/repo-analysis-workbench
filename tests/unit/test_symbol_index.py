@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
@@ -121,6 +122,70 @@ class SymbolIndexTest(unittest.TestCase):
             self.assertEqual(symbol_node["range"]["start_line"], 1)
             self.assertEqual(symbol_doc["metadata"]["provider"], "ctags")
             self.assertEqual(symbol_doc["metadata"]["confidence"], 0.65)
+
+    def test_build_symbol_index_merges_ctags_provider_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            repo_root = workspace / "demo"
+            raw_root = workspace / "raw"
+            repo_root.mkdir()
+            (repo_root / "main.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+            (raw_root / "demo").mkdir(parents=True)
+            (raw_root / "demo" / "manifest.json").write_text(
+                json.dumps({"parser_relevant_source_roots": []}),
+                encoding="utf-8",
+            )
+            (raw_root / "demo" / "repo_map.json").write_text(
+                json.dumps(
+                    {
+                        "files": [
+                            {
+                                "path": "main.py",
+                                "extension": ".py",
+                                "language": "Python",
+                                "generated": False,
+                                "content_hash": "abc",
+                            }
+                        ],
+                        "directories": [{"path": ".", "depth": 0}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ctags_symbol = normalize_symbol_record(
+                {
+                    "symbol_id": "sym-python-run",
+                    "repo": "demo",
+                    "path": "main.py",
+                    "language": "Python",
+                    "kind": "function",
+                    "name": "run",
+                    "qualified_name": "run",
+                    "range": {"start_line": 1, "start_column": 1, "end_line": 2, "end_column": 1},
+                },
+                provider="ctags",
+                confidence=0.65,
+            )
+
+            with mock.patch(
+                "symbols.indexer.probe_universal_ctags",
+                return_value={
+                    "backend": "universal_ctags",
+                    "available": True,
+                    "used": True,
+                    "parsed": True,
+                    "files": 1,
+                    "symbols": 1,
+                    "symbol_records": [ctags_symbol],
+                    "diagnostics": [],
+                },
+            ):
+                artifact = build_symbol_index("demo", repo_root, raw_root)
+
+            self.assertEqual(artifact["summary"]["symbols"], 1)
+            self.assertEqual(artifact["summary"]["provider_counts"], [{"kind": "ctags", "count": 1}])
+            self.assertEqual(artifact["files"][0]["primary_parser_backend"], "universal_ctags")
+            self.assertEqual(artifact["parser_backends"]["universal_ctags"]["symbols"], 1)
 
     def test_build_symbol_index_reuses_cached_file_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
