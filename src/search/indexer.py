@@ -430,7 +430,7 @@ def build_documents(
             "qualified_name": symbol["qualified_name"],
             "symbol_id": symbol["symbol_id"],
             "title": symbol["qualified_name"],
-            "preview": summarize_preview(symbol["signature"] or symbol["qualified_name"]),
+            "preview": summarize_preview(symbol.get("signature") or symbol["qualified_name"]),
             "content": " ".join(
                 item
                 for item in [
@@ -459,12 +459,17 @@ def build_documents(
             "metadata": {
                 "kind": symbol["kind"],
                 "path": symbol["path"],
-                "module_path": symbol["module_path"],
-                "crate": symbol["crate"],
-                "visibility": symbol["visibility"],
-                "container_symbol_id": symbol["container_symbol_id"],
-                "container_qualified_name": symbol["container_qualified_name"],
-                "is_test": symbol["is_test"],
+                "module_path": symbol.get("module_path"),
+                "crate": symbol.get("crate"),
+                "visibility": symbol.get("visibility"),
+                "container_symbol_id": symbol.get("container_symbol_id"),
+                "container_qualified_name": symbol.get("container_qualified_name"),
+                "is_test": bool(symbol.get("is_test")),
+                "provider": symbol.get("provider"),
+                "language": symbol.get("language"),
+                "range": symbol.get("range") or symbol.get("span"),
+                "scope": symbol.get("scope"),
+                "confidence": symbol.get("confidence"),
                 "summary_id": symbol.get("summary_id"),
                 "normalized_body_hash": symbol.get("normalized_body_hash"),
                 "semantic_summary": symbol.get("semantic_summary", {}),
@@ -499,8 +504,12 @@ def build_documents(
                 "metadata": {
                     "kind": symbol["kind"],
                     "path": symbol["path"],
-                    "module_path": symbol["module_path"],
-                    "crate": symbol["crate"],
+                    "module_path": symbol.get("module_path"),
+                    "crate": symbol.get("crate"),
+                    "provider": symbol.get("provider"),
+                    "language": symbol.get("language"),
+                    "range": symbol.get("range") or symbol.get("span"),
+                    "confidence": symbol.get("confidence"),
                     "body_kind": body_kind,
                     "summary_id": symbol.get("summary_id"),
                     "normalized_body_hash": symbol.get("normalized_body_hash"),
@@ -532,8 +541,12 @@ def build_documents(
                 "metadata": {
                     "kind": symbol["kind"],
                     "path": symbol["path"],
-                    "module_path": symbol["module_path"],
-                    "crate": symbol["crate"],
+                    "module_path": symbol.get("module_path"),
+                    "crate": symbol.get("crate"),
+                    "provider": symbol.get("provider"),
+                    "language": symbol.get("language"),
+                    "range": symbol.get("range") or symbol.get("span"),
+                    "confidence": symbol.get("confidence"),
                     "summary_id": symbol.get("summary_id"),
                     "tags": symbol_tags + ["doc"],
                 },
@@ -637,8 +650,12 @@ def path_prefixes(path: str) -> List[str]:
 
 
 def build_symbol_tags(symbol: Dict[str, object]) -> List[str]:
-    tags = path_terms(symbol["path"])
-    tags.append(symbol["kind"])
+    tags = path_terms(str(symbol.get("path") or ""))
+    tags.append(str(symbol.get("kind") or ""))
+    if symbol.get("provider"):
+        tags.append(str(symbol.get("provider")))
+    if symbol.get("language"):
+        tags.append(str(symbol.get("language")).lower())
     if symbol.get("is_test"):
         tags.append("test")
     semantic_summary = symbol.get("semantic_summary", {})
@@ -665,12 +682,12 @@ def symbol_body_kind(symbol: Dict[str, object]) -> str | None:
 
 
 def extract_symbol_chunk(repo_root: Path, symbol: Dict[str, object]) -> str:
-    path = repo_root / str(symbol["path"])
+    path = repo_root / str(symbol.get("path") or "")
     try:
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
         return ""
-    span = symbol.get("span") or {}
+    span = symbol.get("span") or symbol.get("range") or {}
     start_line = max(int(span.get("start_line") or 1), 1)
     end_line = max(int(span.get("end_line") or start_line), start_line)
     if start_line > len(lines):

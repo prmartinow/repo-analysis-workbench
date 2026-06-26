@@ -40,6 +40,12 @@
         "count": 2
       }
     ],
+    "provider_counts": [
+      {
+        "kind": "rust_static",
+        "count": 12
+      }
+    ],
     "reference_kind_counts": [
       {
         "kind": "call",

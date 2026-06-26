@@ -26,6 +26,7 @@ from parsers.rust import (
 from parsers.rust_analyzer_backend import aggregate_rust_analyzer_probes, probe_rust_analyzer
 from parsers.rustc_backend import aggregate_rustc_probes, probe_rust_ast
 from parsers.tree_sitter_backend import aggregate_tree_sitter_probes, probe_tree_sitter
+from symbols.schema import normalize_symbol_record
 
 
 CALL_EXPR_RE = re.compile(
@@ -313,6 +314,7 @@ def build_symbol_index(
 
     emit_stage_progress("rolling_up_summary_counts")
     kind_counts = rollup_counts(item["kind"] for item in symbol_records)
+    provider_counts = rollup_counts(str(item.get("provider") or "unknown") for item in symbol_records)
     reference_kind_counts = rollup_counts(item["kind"] for item in reference_records)
     statement_kind_counts = rollup_counts(item["kind"] for item in statement_records)
 
@@ -338,6 +340,7 @@ def build_symbol_index(
             "statements": len(statement_records),
             "tests": sum(1 for item in symbol_records if item.get("is_test")),
             "kind_counts": kind_counts,
+            "provider_counts": provider_counts,
             "reference_kind_counts": reference_kind_counts,
             "statement_kind_counts": statement_kind_counts,
         },
@@ -2836,7 +2839,7 @@ def strip_expression_noise(expression: str) -> str:
 def symbol_to_record(repo_name: str, context: ParsedFileContext, symbol: RustSymbol) -> Dict[str, object]:
     scope_symbol_id = context.symbol_id_by_local.get(symbol.container_local_id) if symbol.kind == "local" else None
     symbol_id = context.symbol_id_by_local[symbol.local_id]
-    return {
+    record = {
         "symbol_id": symbol_id,
         "repo": repo_name,
         "path": context.parsed.path,
@@ -2848,11 +2851,17 @@ def symbol_to_record(repo_name: str, context: ParsedFileContext, symbol: RustSym
         "name": symbol.name,
         "qualified_name": symbol.qualified_name,
         "span": span_to_dict(symbol.span),
+        "range": span_to_dict(symbol.span),
         "signature": symbol.signature,
         "docstring": symbol.docstring,
         "visibility": symbol.visibility,
         "container_symbol_id": context.symbol_id_by_local.get(symbol.container_local_id),
         "container_qualified_name": symbol.container_qualified_name,
+        "scope": {
+            "symbol_id": context.symbol_id_by_local.get(symbol.container_local_id) or scope_symbol_id,
+            "qualified_name": symbol.container_qualified_name,
+            "path": context.parsed.path,
+        },
         "statement_id": None,
         "scope_symbol_id": scope_symbol_id,
         "reference_target_symbol_id": None,
@@ -2879,6 +2888,7 @@ def symbol_to_record(repo_name: str, context: ParsedFileContext, symbol: RustSym
             "interprocedural_references": [],
         },
     }
+    return normalize_symbol_record(record, provider="rust_static", confidence=1.0)
 
 
 def enrich_symbol_artifact_metadata(

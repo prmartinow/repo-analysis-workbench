@@ -90,10 +90,10 @@ def build_graph_artifact(symbol_index: Dict[str, object]) -> Dict[str, object]:
                 "kind": "file",
                 "repo": repo_name,
                 "path": file_record["path"],
-                "crate": file_record["crate"],
+                "crate": file_record.get("crate"),
                 "package_name": file_record.get("package_name"),
-                "module_path": file_record["module_path"],
-                "language": file_record["language"],
+                "module_path": file_record.get("module_path"),
+                "language": file_record.get("language"),
             },
         )
         append_edge(
@@ -145,16 +145,20 @@ def build_graph_artifact(symbol_index: Dict[str, object]) -> Dict[str, object]:
                 "path": symbol["path"],
                 "name": symbol["name"],
                 "qualified_name": symbol["qualified_name"],
-                "crate": symbol["crate"],
+                "crate": symbol.get("crate"),
                 "package_name": symbol.get("package_name"),
-                "module_path": symbol["module_path"],
-                "language": symbol["language"],
-                "visibility": symbol["visibility"],
-                "is_test": symbol["is_test"],
+                "module_path": symbol.get("module_path"),
+                "language": symbol.get("language"),
+                "visibility": symbol.get("visibility"),
+                "is_test": bool(symbol.get("is_test")),
+                "provider": symbol.get("provider"),
+                "range": symbol_range(symbol),
+                "scope": symbol.get("scope"),
+                "confidence": symbol.get("confidence"),
             },
         )
-        parent_node = symbol["container_symbol_id"] or file_node_ids[symbol["path"]]
-        edge_type = "CONTAINS" if symbol["container_symbol_id"] else "DEFINES"
+        parent_node = symbol.get("container_symbol_id") or file_node_ids[symbol["path"]]
+        edge_type = "CONTAINS" if symbol.get("container_symbol_id") else "DEFINES"
         append_edge(
             edges,
             edge_counts,
@@ -166,7 +170,7 @@ def build_graph_artifact(symbol_index: Dict[str, object]) -> Dict[str, object]:
                 path=symbol["path"],
             ),
         )
-        if not symbol["container_symbol_id"]:
+        if not symbol.get("container_symbol_id"):
             append_edge(
                 edges,
                 edge_counts,
@@ -788,8 +792,8 @@ def append_neighbor_edges(
         ordered = sorted(
             group,
             key=lambda item: (
-                int(item["span"]["start_line"]),
-                int(item["span"]["start_column"]),
+                int(symbol_range(item)["start_line"]),
+                int(symbol_range(item)["start_column"]),
                 str(item["symbol_id"]),
             ),
         )
@@ -810,6 +814,18 @@ def append_neighbor_edges(
 
 def statement_target_key(target: Dict[str, object]) -> str | None:
     return target.get("target_symbol_id") or target.get("target_qualified_name") or target.get("qualified_name_hint")
+
+
+def symbol_range(symbol: Dict[str, object]) -> Dict[str, object]:
+    value = symbol.get("range") or symbol.get("span")
+    if isinstance(value, dict):
+        return value
+    return {
+        "start_line": 1,
+        "start_column": 1,
+        "end_line": 1,
+        "end_column": 1,
+    }
 
 
 def resolve_target_node(

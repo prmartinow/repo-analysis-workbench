@@ -9,7 +9,10 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from graph.builder import build_graph_artifact
+from search.indexer import build_documents
 from symbols.indexer import build_symbol_index
+from symbols.schema import normalize_symbol_record
 
 
 class SymbolIndexTest(unittest.TestCase):
@@ -70,7 +73,54 @@ class SymbolIndexTest(unittest.TestCase):
 
             self.assertEqual(method_symbol["container_symbol_id"], impl_symbol["symbol_id"])
             self.assertEqual(method_symbol["module_path"], "demo_crate")
+            self.assertEqual(method_symbol["provider"], "rust_static")
+            self.assertEqual(method_symbol["confidence"], 1.0)
+            self.assertEqual(method_symbol["range"], method_symbol["span"])
+            self.assertEqual(method_symbol["scope"]["symbol_id"], impl_symbol["symbol_id"])
             self.assertEqual(call_reference["container_symbol_id"], method_symbol["symbol_id"])
+
+    def test_provider_neutral_shallow_symbol_feeds_graph_and_search_docs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "demo"
+            repo_root.mkdir()
+            (repo_root / "main.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+            symbol = normalize_symbol_record(
+                {
+                    "symbol_id": "sym-python-run",
+                    "repo": "demo",
+                    "path": "main.py",
+                    "language": "Python",
+                    "kind": "function",
+                    "name": "run",
+                    "qualified_name": "run",
+                    "range": {"start_line": 1, "start_column": 1, "end_line": 2, "end_column": 13},
+                },
+                provider="ctags",
+                confidence=0.65,
+            )
+            symbol_index = {
+                "repo": "demo",
+                "files": [{"path": "main.py", "language": "Python", "symbols": 1}],
+                "symbols": [symbol],
+                "imports": [],
+                "references": [],
+                "statements": [],
+                "summary": {"rust_files": 0, "symbols": 1, "imports": 0, "statements": 0},
+            }
+            repo_map = {
+                "files": [{"path": "main.py", "language": "Python", "generated": False}],
+                "directories": [{"path": ".", "depth": 0}],
+            }
+
+            graph = build_graph_artifact(symbol_index)
+            symbol_node = next(item for item in graph["nodes"] if item["node_id"] == "sym-python-run")
+            documents = list(build_documents("demo", repo_root, {"language_mix": []}, repo_map, symbol_index))
+            symbol_doc = next(item for item in documents if item.get("symbol_id") == "sym-python-run")
+
+            self.assertEqual(symbol_node["provider"], "ctags")
+            self.assertEqual(symbol_node["range"]["start_line"], 1)
+            self.assertEqual(symbol_doc["metadata"]["provider"], "ctags")
+            self.assertEqual(symbol_doc["metadata"]["confidence"], 0.65)
 
     def test_build_symbol_index_reuses_cached_file_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

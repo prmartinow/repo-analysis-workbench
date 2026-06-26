@@ -256,8 +256,12 @@ def build_file_summaries(
     statement_counts = Counter(statement["path"] for statement in symbols.get("statements", []))
     for path, file_record in sorted(file_records.items()):
         file_symbols = symbols_by_path.get(path, [])
-        public_symbols = [symbol["qualified_name"] for symbol in file_symbols if str(symbol.get("visibility") or "").startswith("pub")]
-        top_symbols = [symbol["qualified_name"] for symbol in file_symbols[:6]]
+        public_symbols = [
+            str(symbol.get("qualified_name") or symbol.get("name") or "")
+            for symbol in file_symbols
+            if str(symbol.get("visibility") or "").startswith("pub")
+        ]
+        top_symbols = [str(symbol.get("qualified_name") or symbol.get("name") or "") for symbol in file_symbols[:6]]
         tags = path_tags(path)
         files.append(
             {
@@ -300,8 +304,13 @@ def build_symbol_summaries(
                 "kind": symbol["kind"],
                 "name": symbol["name"],
                 "qualified_name": symbol["qualified_name"],
-                "visibility": symbol["visibility"],
-                "container_qualified_name": symbol["container_qualified_name"],
+                "visibility": symbol.get("visibility"),
+                "container_qualified_name": symbol.get("container_qualified_name"),
+                "provider": symbol.get("provider"),
+                "language": symbol.get("language"),
+                "range": symbol.get("range") or symbol.get("span"),
+                "scope": symbol.get("scope"),
+                "confidence": symbol.get("confidence"),
                 "incoming_edges": dict(sorted(incoming.items())),
                 "outgoing_edges": dict(sorted(outgoing.items())),
                 "summary": (
