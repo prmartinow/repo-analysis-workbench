@@ -250,7 +250,7 @@ def qwen_rerank(query: str, documents: List[str]) -> List[Dict[str, object]]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        with urllib.request.urlopen(request, timeout=None) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")

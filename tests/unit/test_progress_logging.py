@@ -12,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 from cli.main import enrich_progress_estimate
 from embeddings.indexer import build_qwen_embedding_payload
 from embeddings.providers import embed_with_qwen
+from rerank.fusion import qwen_rerank
 
 
 class ProgressLoggingTest(unittest.TestCase):
@@ -41,6 +42,20 @@ class ProgressLoggingTest(unittest.TestCase):
         self.assertIsNone(urlopen.call_args.kwargs["timeout"])
         request = urlopen.call_args.args[0]
         self.assertEqual(request.get_header("X-workload"), "batch")
+
+    def test_qwen_rerank_requests_do_not_set_client_timeout(self) -> None:
+        response = mock.Mock()
+        response.read.return_value = json.dumps({"results": [{"index": 0, "score": 1.0}]}).encode("utf-8")
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=None)
+
+        with (
+            mock.patch.dict("os.environ", {"REPO_ANALYSIS_QWEN_RERANK_URL": "http://127.0.0.1:18200/rerank"}),
+            mock.patch("rerank.fusion.urllib.request.urlopen", return_value=response) as urlopen,
+        ):
+            qwen_rerank("helper", ["demo::helper"])
+
+        self.assertIsNone(urlopen.call_args.kwargs["timeout"])
 
     def test_qwen_embedding_build_marks_batch_in_flight_before_request(self) -> None:
         events = []
