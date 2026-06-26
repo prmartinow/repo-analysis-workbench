@@ -284,8 +284,11 @@ def build_openai_embedding_payload(
     embedded_documents = []
     processed_docs = 0
     batch_index = 0
+    total_docs_hint: int | None = None
 
     for search_batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
+        if search_batch and search_batch[0].get("_total_docs") is not None:
+            total_docs_hint = int(search_batch[0]["_total_docs"])
         for batch in batched(search_batch, BATCH_SIZE):
             batch_index += 1
             vectors = embed_with_openai([str(document["content"] or "") for document in batch], model_name)
@@ -312,6 +315,7 @@ def build_openai_embedding_payload(
                 batch_index=batch_index,
                 batch_docs=len(batch),
                 processed_docs=processed_docs,
+                total_docs=total_docs_hint,
             )
 
     dimensions = len(embedded_documents[0]["vector"]) if embedded_documents else 0
@@ -358,8 +362,11 @@ def build_qwen_embedding_payload(
     embedded_documents = []
     processed_docs = 0
     batch_index = 0
+    total_docs_hint: int | None = None
 
     for search_batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
+        if search_batch and search_batch[0].get("_total_docs") is not None:
+            total_docs_hint = int(search_batch[0]["_total_docs"])
         for batch in batched(search_batch, BATCH_SIZE):
             batch_index += 1
             vectors = embed_with_qwen([str(document["content"] or "") for document in batch], model_name)
@@ -386,6 +393,7 @@ def build_qwen_embedding_payload(
                 batch_index=batch_index,
                 batch_docs=len(batch),
                 processed_docs=processed_docs,
+                total_docs=total_docs_hint,
             )
 
     dimensions = len(embedded_documents[0]["vector"]) if embedded_documents else 0

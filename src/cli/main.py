@@ -76,6 +76,16 @@ from symbols.persistence import update_lmdb_artifact_metadata, write_metadata_bu
 
 
 DEFAULT_ANALYSIS_SURFACES = ("src", "lib", "crates", "packages", "apps", "tests", "docs")
+DEFAULT_PROGRESS_PAIRS = (
+    ("index", "total", "items"),
+    ("processed_docs", "total_docs", "docs"),
+    ("completed_runs", "total_runs", "runs"),
+    ("files_processed", "total_files", "files"),
+    ("directories_processed", "total_directories", "directories"),
+    ("packages_processed", "total_packages", "packages"),
+    ("symbols_processed", "total_symbols", "symbols"),
+    ("statements_processed", "total_statements", "statements"),
+)
 
 
 def generic_inventory(repo_root: Path, repo_name: str) -> dict:
@@ -634,6 +644,10 @@ def handle_build_index(args: argparse.Namespace) -> int:
         def progress_callback(event: Dict[str, object]) -> None:
             should_log = False
             log_message = None
+            event = enrich_progress_estimate(
+                event,
+                elapsed_ms=float(event.get("elapsed_ms") or 0.0),
+            )
             event_name = str(event.get("event") or "")
             if event_name == "repo_scan_started":
                 log_message = (
@@ -655,9 +669,9 @@ def handle_build_index(args: argparse.Namespace) -> int:
                         f"[build-index] repo={repo_name} progress={index}/{total} "
                         f"file={event.get('path')} file_ms={file_elapsed_ms:.1f} "
                         f"elapsed_ms={float(event.get('elapsed_ms') or 0.0):.1f} "
-                        f"rss_mb={float(event.get('rss_mb') or 0.0):.1f} "
                         f"backend_failures={json.dumps(event.get('backend_failures', {}), sort_keys=True)}"
                     )
+                    log_message = append_progress_estimate(log_message, event)
             elif event_name == "stage_progress":
                 should_log = True
                 log_message = (
@@ -666,6 +680,7 @@ def handle_build_index(args: argparse.Namespace) -> int:
                     f"rss_mb={float(event.get('rss_mb') or 0.0):.1f} "
                     f"contexts={int(event.get('contexts') or 0)}"
                 )
+                log_message = append_progress_estimate(log_message, event)
             emit_build_progress(repo_progress_path, event, log_message=log_message if should_log else None)
 
         native_worker = probe_native_worker()
@@ -800,9 +815,60 @@ def handle_build_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def enrich_progress_estimate(
+    payload: Dict[str, object],
+    *,
+    elapsed_ms: float,
+    progress_pairs: tuple[tuple[str, str, str], ...] = DEFAULT_PROGRESS_PAIRS,
+) -> Dict[str, object]:
+    enriched = dict(payload)
+    elapsed_seconds = max(elapsed_ms / 1000.0, 0.0)
+    if elapsed_seconds <= 0:
+        return enriched
+
+    for processed_key, total_key, unit in progress_pairs:
+        processed = enriched.get(processed_key)
+        total = enriched.get(total_key)
+        if processed is None or total is None:
+            continue
+        try:
+            processed_count = int(processed)
+            total_count = int(total)
+        except (TypeError, ValueError):
+            continue
+        if processed_count <= 0 or total_count <= 0:
+            continue
+
+        rate_per_sec = processed_count / elapsed_seconds
+        remaining = max(total_count - processed_count, 0)
+        enriched.setdefault("progress_unit", unit)
+        enriched.setdefault("percent_complete", round(min(processed_count / total_count, 1.0) * 100, 2))
+        enriched.setdefault("rate_per_sec", round(rate_per_sec, 3))
+        enriched.setdefault("eta_seconds", round(remaining / rate_per_sec, 1) if rate_per_sec > 0 else None)
+        break
+    return enriched
+
+
+def append_progress_estimate(message: str, payload: Dict[str, object]) -> str:
+    if payload.get("percent_complete") is not None:
+        message += f" pct={float(payload.get('percent_complete') or 0.0):.2f}"
+    if payload.get("rate_per_sec") is not None:
+        unit = str(payload.get("progress_unit") or "items")
+        message += f" rate_per_sec={float(payload.get('rate_per_sec') or 0.0):.3f}/{unit}"
+    if payload.get("eta_seconds") is not None:
+        message += f" eta_seconds={float(payload.get('eta_seconds') or 0.0):.1f}"
+    if payload.get("rss_mb") is not None:
+        message += f" rss_mb={float(payload.get('rss_mb') or 0.0):.1f}"
+    return message
+
+
 def emit_build_progress(progress_path: Path, payload: Dict[str, object], *, log_message: str | None = None) -> None:
     progress_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"recorded_at": timestamp_now(), **payload}
     progress_path.write_text(json.dumps(payload, indent=2, sort_keys=False), encoding="utf-8")
+    with progress_path.with_suffix(".jsonl").open("a", encoding="utf-8") as handle:
+        json.dump(payload, handle, sort_keys=False)
+        handle.write("\n")
     if log_message:
         print(log_message, flush=True, file=sys.stderr)
 
@@ -842,6 +908,10 @@ def handle_build_search(args: argparse.Namespace) -> int:
 
         def progress_callback(event: Dict[str, object]) -> None:
             stage = str(event.get("event") or "")
+            event = enrich_progress_estimate(
+                event,
+                elapsed_ms=float(event.get("elapsed_ms") or 0.0),
+            )
             message = (
                 f"[build-search] repo={repo_name} stage={stage} "
                 f"elapsed_ms={float(event.get('elapsed_ms') or 0.0):.1f}"
@@ -854,10 +924,28 @@ def handle_build_search(args: argparse.Namespace) -> int:
                 message += f" symbols={int(event.get('symbols') or 0)}"
             if event.get("statements") is not None:
                 message += f" statements={int(event.get('statements') or 0)}"
+            for processed_key, total_key, label in (
+                ("files_processed", "total_files", "files"),
+                ("directories_processed", "total_directories", "directories"),
+                ("packages_processed", "total_packages", "packages"),
+                ("symbols_processed", "total_symbols", "symbols"),
+                ("statements_processed", "total_statements", "statements"),
+            ):
+                if event.get(processed_key) is not None:
+                    if event.get(total_key) is not None:
+                        message += f" {label}={int(event.get(processed_key) or 0)}/{int(event.get(total_key) or 0)}"
+                    else:
+                        message += f" {label}={int(event.get(processed_key) or 0)}"
+            for total_key in ("total_files", "total_directories", "total_packages", "total_symbols", "total_statements"):
+                if event.get(total_key) is not None and not any(total_key == pair[1] and event.get(pair[0]) is not None for pair in DEFAULT_PROGRESS_PAIRS):
+                    message += f" {total_key}={int(event.get(total_key) or 0)}"
+            if event.get("current_path"):
+                message += f" current_path={event.get('current_path')}"
             if event.get("built") is not None:
                 message += f" built={str(bool(event.get('built'))).lower()}"
             if event.get("reason"):
                 message += f" reason={event.get('reason')}"
+            message = append_progress_estimate(message, event)
             emit_build_progress(progress_path, event, log_message=message)
 
         payload = build_search_index(
@@ -1064,6 +1152,7 @@ def handle_build_embeddings(args: argparse.Namespace) -> int:
                 **event,
                 "elapsed_ms": elapsed_ms,
             }
+            payload = enrich_progress_estimate(payload, elapsed_ms=elapsed_ms)
 
             message = (
                 f"[build-embeddings] repo={repo_name} stage={event_name} "
@@ -1094,6 +1183,7 @@ def handle_build_embeddings(args: argparse.Namespace) -> int:
                 if payload.get(key) is not None:
                     message += f" {key}={payload.get(key)}"
 
+            message = append_progress_estimate(message, payload)
             emit_build_progress(progress_path, payload, log_message=message)
 
         payload = build_embedding_index(
@@ -1150,6 +1240,10 @@ def handle_run_benchmarks(args: argparse.Namespace) -> int:
 
     def progress_callback(event: Dict[str, object]) -> None:
         event_name = str(event.get("event") or "")
+        event = enrich_progress_estimate(
+            event,
+            elapsed_ms=float(event.get("elapsed_ms") or 0.0),
+        )
         message = (
             f"[run-benchmarks] event={event_name} "
             f"elapsed_ms={float(event.get('elapsed_ms') or 0.0):.1f}"
@@ -1168,6 +1262,7 @@ def handle_run_benchmarks(args: argparse.Namespace) -> int:
             message += f" exact_hit={str(bool(event.get('exact_hit'))).lower()}"
         if event.get("path_hit") is not None:
             message += f" path_hit={str(bool(event.get('path_hit'))).lower()}"
+        message = append_progress_estimate(message, event)
         emit_build_progress(progress_path, event, log_message=message)
 
     payload = run_benchmarks(

@@ -10,7 +10,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence
 from common.native_tool import build_bm25_index, native_worker_available, query_bm25_index
 from common.text import path_terms, tokenize
 from common.telemetry import trace_operation
-from symbols.indexer import stable_id, timestamp_now
+from symbols.indexer import current_rss_mb, stable_id, timestamp_now
 from symbols.persistence import load_symbol_index, update_lmdb_artifact_metadata
 
 
@@ -84,8 +84,27 @@ def build_search_index(
         statements=len(symbols.get("statements", [])),
     )
 
-    emit("building_documents")
-    documents = list(build_documents(repo_name, repo_root, manifest, repo_map, symbols))
+    emit(
+        "building_documents",
+        total_files=len(repo_map.get("files", [])),
+        total_directories=len(repo_map.get("directories", [])),
+        total_symbols=len(symbols.get("symbols", [])),
+        total_statements=len(symbols.get("statements", [])),
+        rss_mb=current_rss_mb(),
+    )
+    documents = list(
+        build_documents(
+            repo_name,
+            repo_root,
+            manifest,
+            repo_map,
+            symbols,
+            progress_callback=lambda event: emit(
+                str(event.get("event") or "documents_progress"),
+                **{key: value for key, value in event.items() if key != "event"},
+            ),
+        )
+    )
     repo_output = output_root / repo_name
     repo_output.mkdir(parents=True, exist_ok=True)
     emit("documents_built", documents=len(documents))
@@ -287,12 +306,40 @@ def build_documents(
     manifest: Dict[str, object],
     repo_map: Dict[str, object],
     symbols: Dict[str, object],
+    *,
+    progress_callback: Callable[[Dict[str, object]], None] | None = None,
+    progress_interval: int = 5_000,
 ) -> Iterable[Dict[str, object]]:
+    def emit(event: str, **extra: object) -> None:
+        if progress_callback is None:
+            return
+        progress_callback({"event": event, **extra, "rss_mb": current_rss_mb()})
+
+    def should_emit(index: int, total: int) -> bool:
+        return index == 1 or index == total or (progress_interval > 0 and index % progress_interval == 0)
+
+    source_files = list(repo_map.get("files", []))
+    source_directories = list(repo_map.get("directories", []))
+    source_symbols = list(symbols.get("symbols", []))
+    source_statements = list(symbols.get("statements", []))
+    emit(
+        "document_inputs_prepared",
+        total_files=len(source_files),
+        total_directories=len(source_directories),
+        total_symbols=len(source_symbols),
+        total_statements=len(source_statements),
+    )
+
     files_by_path = {item["path"]: item for item in repo_map.get("files", [])}
     parsed_files_by_path = {item["path"]: item for item in symbols.get("files", [])}
-    symbol_counts_by_path = Counter(item["path"] for item in symbols.get("symbols", []))
+    symbol_counts_by_path = Counter(item["path"] for item in source_symbols)
+    emit("symbol_counts_built", paths=len(symbol_counts_by_path), total_symbols=len(source_symbols))
     package_rollups = build_package_rollups(symbols)
+    emit("package_rollups_built", packages=len(package_rollups), total_symbols=len(source_symbols))
     directory_rollups = build_directory_rollups(repo_map, symbols)
+    emit("directory_rollups_built", directories=len(directory_rollups), total_files=len(source_files))
+
+    documents_emitted = 1
 
     yield {
         "doc_id": stable_id("doc", repo_name, "repo"),
@@ -320,10 +367,19 @@ def build_documents(
         },
     }
 
-    for directory in repo_map.get("directories", []):
+    for index, directory in enumerate(source_directories, start=1):
         path = directory["path"]
         rollup = directory_rollups.get(path, {})
         child_files = rollup.get("sample_files", [])
+        documents_emitted += 1
+        if should_emit(index, len(source_directories)):
+            emit(
+                "directory_documents_progress",
+                directories_processed=index,
+                total_directories=len(source_directories),
+                documents=documents_emitted,
+                current_path=path,
+            )
         yield {
             "doc_id": stable_id("doc", repo_name, "directory", path),
             "kind": "directory",
@@ -351,7 +407,16 @@ def build_documents(
             },
         }
 
-    for package_name, rollup in sorted(package_rollups.items()):
+    package_items = sorted(package_rollups.items())
+    for index, (package_name, rollup) in enumerate(package_items, start=1):
+        documents_emitted += 1
+        if should_emit(index, len(package_items)):
+            emit(
+                "package_documents_progress",
+                packages_processed=index,
+                total_packages=len(package_items),
+                documents=documents_emitted,
+            )
         yield {
             "doc_id": stable_id("doc", repo_name, "package", package_name),
             "kind": "package",
@@ -380,9 +445,19 @@ def build_documents(
             },
         }
 
-    for path, file_record in sorted(files_by_path.items()):
+    file_items = sorted(files_by_path.items())
+    for index, (path, file_record) in enumerate(file_items, start=1):
         parsed_file = parsed_files_by_path.get(path, {})
         source_text = read_indexable_file(repo_root / path, file_record)
+        documents_emitted += 1
+        if should_emit(index, len(file_items)):
+            emit(
+                "file_documents_progress",
+                files_processed=index,
+                total_files=len(file_items),
+                documents=documents_emitted,
+                current_path=path,
+            )
         yield {
             "doc_id": stable_id("doc", repo_name, "file", path),
             "kind": "file",
@@ -419,8 +494,17 @@ def build_documents(
             },
         }
 
-    for symbol in symbols.get("symbols", []):
+    for index, symbol in enumerate(source_symbols, start=1):
         symbol_tags = build_symbol_tags(symbol)
+        documents_emitted += 1
+        if should_emit(index, len(source_symbols)):
+            emit(
+                "symbol_documents_progress",
+                symbols_processed=index,
+                total_symbols=len(source_symbols),
+                documents=documents_emitted,
+                current_path=symbol["path"],
+            )
         yield {
             "doc_id": stable_id("doc", repo_name, "symbol", symbol["symbol_id"]),
             "kind": "symbol",
@@ -480,6 +564,7 @@ def build_documents(
         body_kind = symbol_body_kind(symbol)
         body_text = extract_symbol_chunk(repo_root, symbol)
         if body_kind and body_text:
+            documents_emitted += 1
             yield {
                 "doc_id": stable_id("doc", repo_name, body_kind, symbol["symbol_id"]),
                 "kind": body_kind,
@@ -518,6 +603,7 @@ def build_documents(
             }
 
         if symbol.get("docstring"):
+            documents_emitted += 1
             yield {
                 "doc_id": stable_id("doc", repo_name, "doc", symbol["symbol_id"]),
                 "kind": "doc",
@@ -552,7 +638,16 @@ def build_documents(
                 },
             }
 
-    for statement in symbols.get("statements", []):
+    for index, statement in enumerate(source_statements, start=1):
+        documents_emitted += 1
+        if should_emit(index, len(source_statements)):
+            emit(
+                "statement_documents_progress",
+                statements_processed=index,
+                total_statements=len(source_statements),
+                documents=documents_emitted,
+                current_path=statement["path"],
+            )
         yield {
             "doc_id": stable_id("doc", repo_name, "statement", statement["statement_id"]),
             "kind": "statement",
@@ -585,6 +680,8 @@ def build_documents(
                 "tags": path_tags(statement["path"]),
             },
         }
+
+    emit("document_generation_completed", documents=documents_emitted)
 
 
 def build_directory_rollups(repo_map: Dict[str, object], symbols: Dict[str, object]) -> Dict[str, Dict[str, object]]:

@@ -123,6 +123,62 @@ class SymbolIndexTest(unittest.TestCase):
             self.assertEqual(symbol_doc["metadata"]["provider"], "ctags")
             self.assertEqual(symbol_doc["metadata"]["confidence"], 0.65)
 
+    def test_build_documents_emits_progress_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "demo"
+            repo_root.mkdir()
+            (repo_root / "main.py").write_text('"""demo docs"""\ndef run():\n    return 1\n', encoding="utf-8")
+            symbol = normalize_symbol_record(
+                {
+                    "symbol_id": "sym-python-run",
+                    "language": "Python",
+                    "path": "main.py",
+                    "name": "run",
+                    "qualified_name": "main.run",
+                    "kind": "function",
+                    "span": {"start_line": 2, "end_line": 3},
+                    "signature": "def run():",
+                    "docstring": "demo docs",
+                },
+                provider="ctags",
+                confidence=0.65,
+            )
+            symbol_index = {
+                "repo": "demo",
+                "files": [{"path": "main.py", "language": "Python", "symbols": 1}],
+                "symbols": [symbol],
+                "imports": [],
+                "references": [],
+                "statements": [],
+                "summary": {"rust_files": 0, "symbols": 1, "imports": 0, "statements": 0},
+            }
+            repo_map = {
+                "files": [{"path": "main.py", "language": "Python", "generated": False}],
+                "directories": [{"path": ".", "depth": 0}],
+            }
+            events: list[dict[str, object]] = []
+
+            documents = list(
+                build_documents(
+                    "demo",
+                    repo_root,
+                    {"language_mix": []},
+                    repo_map,
+                    symbol_index,
+                    progress_callback=events.append,
+                    progress_interval=1,
+                )
+            )
+
+            self.assertTrue(any(item["kind"] == "symbol" for item in documents))
+            event_names = [str(event.get("event")) for event in events]
+            self.assertIn("document_inputs_prepared", event_names)
+            self.assertIn("file_documents_progress", event_names)
+            self.assertIn("symbol_documents_progress", event_names)
+            self.assertIn("document_generation_completed", event_names)
+            completed = next(event for event in events if event.get("event") == "document_generation_completed")
+            self.assertEqual(completed["documents"], len(documents))
+
     def test_build_symbol_index_merges_ctags_provider_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
