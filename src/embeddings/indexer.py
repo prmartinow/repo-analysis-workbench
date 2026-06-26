@@ -378,7 +378,31 @@ def build_qwen_embedding_payload(
                 processed_docs=processed_docs,
                 total_docs=total_docs_hint,
             )
-            vectors = embed_with_qwen([str(document["content"] or "") for document in batch], model_name)
+            try:
+                vectors = embed_with_qwen([str(document["content"] or "") for document in batch], model_name)
+            except Exception as exc:
+                emit(
+                    "qwen_embed_batch_failed",
+                    provider="qwen",
+                    model=model_name,
+                    batch_index=batch_index,
+                    batch_docs=len(batch),
+                    processed_docs=processed_docs,
+                    total_docs=total_docs_hint,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                raise
+            emit(
+                "qwen_embed_batch_completed",
+                provider="qwen",
+                model=model_name,
+                batch_index=batch_index,
+                batch_docs=len(batch),
+                processed_docs=processed_docs + len(batch),
+                total_docs=total_docs_hint,
+                returned_vectors=len(vectors),
+            )
             for document, vector in zip(batch, vectors):
                 embedded_documents.append(
                     {

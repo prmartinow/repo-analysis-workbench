@@ -86,7 +86,43 @@ class ProgressLoggingTest(unittest.TestCase):
         self.assertEqual(events[1]["batch_index"], 1)
         self.assertEqual(events[1]["processed_docs"], 0)
         self.assertEqual(events[1]["total_docs"], 1)
-        self.assertEqual(events[2]["event"], "qwen_embed_progress")
+        self.assertEqual(events[2]["event"], "qwen_embed_batch_completed")
+        self.assertEqual(events[2]["processed_docs"], 1)
+        self.assertEqual(events[2]["returned_vectors"], 1)
+        self.assertEqual(events[3]["event"], "qwen_embed_progress")
+        embed.assert_called_once_with(["hello"], "text")
+
+    def test_qwen_embedding_build_marks_batch_failure_without_retrying(self) -> None:
+        events = []
+        documents = [
+            {
+                "doc_id": "doc-demo",
+                "kind": "file",
+                "path": "README.md",
+                "name": "README.md",
+                "qualified_name": "README.md",
+                "symbol_id": None,
+                "title": "README",
+                "preview": "hello",
+                "content": "hello",
+                "_total_docs": 1,
+            }
+        ]
+
+        with (
+            mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
+            mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
+            mock.patch("embeddings.indexer.embed_with_qwen", side_effect=RuntimeError("queue wait timed out")) as embed,
+        ):
+            with self.assertRaises(RuntimeError):
+                build_qwen_embedding_payload(Path("/tmp/search"), "demo", "text", progress_callback=events.append)
+
+        self.assertEqual([event["event"] for event in events], [
+            "qwen_embed_started",
+            "qwen_embed_batch_started",
+            "qwen_embed_batch_failed",
+        ])
+        self.assertEqual(events[2]["error_type"], "RuntimeError")
         embed.assert_called_once_with(["hello"], "text")
 
 
