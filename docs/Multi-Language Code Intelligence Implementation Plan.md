@@ -21,7 +21,7 @@ The implementation is complete only when repo-analysis can:
 
 | Step | Milestone | Status | Completion evidence |
 |---|---|---|---|
-| 1 | Retrieval benchmark cases and metrics | Not started | `run-benchmarks` loads benchmark cases from files and reports recall@k, MRR, and NDCG. |
+| 1 | Retrieval benchmark cases and metrics | Done | `run-benchmarks` loads JSON/JSONL cases, rejects empty case sets, and reports recall@k, MRR, and NDCG. |
 | 2 | Provider-neutral symbol records | Not started | Symbol artifacts include `provider`, `language`, `kind`, `path`, `name`, `qualified_name`, `range`, `scope`, and `confidence` fields. |
 | 3 | Universal Ctags provider | Not started | Non-Rust repos produce symbols from `ctags --output-format=json`; provider metadata records ctags provenance. |
 | 4 | Generic non-Rust summary fallback | Not started | Repos with zero symbols still get useful project, directory, and file summaries from raw inventory. |
@@ -384,8 +384,14 @@ At the start and end of each implementation session:
 
 Overall status: not complete.
 
-Current next milestone: retrieval benchmark case loading and metrics.
+Current next milestone: provider-neutral symbol records.
 
-Current risk: search/ranking changes are not meaningful until benchmark cases
-exist, and non-Rust architecture analysis is weak until ctags and tree-sitter
-populate symbol and summary artifacts.
+Current risk: non-Rust architecture analysis is weak until provider-neutral
+symbols, ctags, and tree-sitter populate symbol and summary artifacts.
+
+Latest verification:
+
+```bash
+python3 -m unittest discover tests/unit
+python3 src/cli/main.py run-benchmarks --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --eval-root /mnt/workspace/code-intel/repo-analysis-pilot/eval --cases-root data/eval/cases --repo agent-kit --mode lexical_only --limit 5
+```

@@ -61,6 +61,7 @@ from embeddings.indexer import build_embedding_index, query_embedding_index
 from evaluation.harness import (
     benchmark_interactive_commands,
     export_benchmark_prompts,
+    load_benchmark_cases,
     run_benchmarks,
     score_answer_bundles,
 )
@@ -160,6 +161,20 @@ def add_eval_root_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_benchmark_case_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cases-root",
+        default=str(DEFAULT_EVAL_ROOT / "cases"),
+        help=f"Benchmark case directory with JSON/JSONL files. Default: {DEFAULT_EVAL_ROOT / 'cases'}",
+    )
+    parser.add_argument(
+        "--case",
+        dest="case_paths",
+        action="append",
+        help="Benchmark case JSON/JSONL file or directory. May be passed multiple times.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="repo-analysis operator CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -242,6 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_graph_root_arg(run_eval)
     add_parsed_root_arg(run_eval)
     add_eval_root_arg(run_eval)
+    add_benchmark_case_args(run_eval)
     run_eval.add_argument("--repo", action="append")
     run_eval.add_argument("--mode", action="append")
     run_eval.add_argument("--limit", type=int, default=5)
@@ -493,6 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_graph_root_arg(export_prompts_cmd)
     add_parsed_root_arg(export_prompts_cmd)
     add_eval_root_arg(export_prompts_cmd)
+    add_benchmark_case_args(export_prompts_cmd)
     export_prompts_cmd.add_argument("--repo", action="append")
     export_prompts_cmd.add_argument("--limit", type=int, default=8)
 
@@ -501,11 +518,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_graph_root_arg(score_bundles_cmd)
     add_parsed_root_arg(score_bundles_cmd)
     add_eval_root_arg(score_bundles_cmd)
+    add_benchmark_case_args(score_bundles_cmd)
     score_bundles_cmd.add_argument("--repo", action="append")
     score_bundles_cmd.add_argument("--limit", type=int, default=8)
 
     score_external_cmd = subparsers.add_parser("score-external-answers", help="Score externally produced answers against benchmark expectations.")
     add_eval_root_arg(score_external_cmd)
+    add_benchmark_case_args(score_external_cmd)
     score_external_cmd.add_argument("--answers-path", required=True)
 
     benchmark_interactive_cmd = subparsers.add_parser("benchmark-interactive", help="Emit a baseline latency and telemetry report for interactive commands.")
@@ -1071,6 +1090,7 @@ def handle_run_benchmarks(args: argparse.Namespace) -> int:
         repos=tuple(args.repo or ()),
         limit=args.limit,
         modes=tuple(args.mode or ()),
+        benchmarks=load_benchmark_cases_from_args(args),
         progress_callback=progress_callback,
     )
     emit_build_progress(
@@ -1088,6 +1108,13 @@ def handle_run_benchmarks(args: argparse.Namespace) -> int:
     )
     print_json(payload)
     return 0
+
+
+def load_benchmark_cases_from_args(args: argparse.Namespace) -> List[Dict[str, object]]:
+    return load_benchmark_cases(
+        cases_root=Path(args.cases_root).resolve() if getattr(args, "cases_root", None) else None,
+        case_paths=tuple(Path(path).resolve() for path in (getattr(args, "case_paths", None) or ())),
+    )
 
 
 def handle_graph_query(args: argparse.Namespace) -> int:
@@ -1440,6 +1467,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 Path(args.eval_root).resolve(),
                 repos=tuple(args.repo or ()),
                 limit=args.limit,
+                benchmarks=load_benchmark_cases_from_args(args),
             )
         )
     if args.command == "score-answer-bundles":
@@ -1451,6 +1479,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 Path(args.eval_root).resolve(),
                 repos=tuple(args.repo or ()),
                 limit=args.limit,
+                benchmarks=load_benchmark_cases_from_args(args),
             )
         )
     if args.command == "score-external-answers":
@@ -1458,6 +1487,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             score_external_answers(
                 Path(args.eval_root).resolve(),
                 Path(args.answers_path).resolve(),
+                benchmarks=load_benchmark_cases_from_args(args),
             )
         )
     if args.command == "benchmark-interactive":

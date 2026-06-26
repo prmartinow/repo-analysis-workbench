@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -31,18 +32,18 @@ from symbols.indexer import timestamp_now
 
 SCHEMA_VERSION = "0.4.0"
 EVAL_CACHE_SCHEMA_VERSION = "0.1.0"
+DEFAULT_CASES_ROOT = Path("data/eval/cases")
+BENCHMARK_CASE_SUFFIXES = {".json", ".jsonl"}
+METRIC_K_VALUES = (1, 3, 5, 10)
 DEFAULT_MODES = (
     "semantic_graph_rerank",
     "semantic_graph_rerank_summaries",
     "selective_on",
     "selective_off",
 )
-DISABLED_NO_EMBEDDING_MODES = {
-    "lexical_only",
-    "lexical_graph",
-    "lexical_graph_rerank",
-    "lexical_graph_rerank_summaries",
-}
+LEXICAL_BENCHMARK_MODES = {"lexical_only"}
+SEMANTIC_BENCHMARK_MODES = set(DEFAULT_MODES) | {"embedding_only"}
+SUPPORTED_BENCHMARK_MODES = SEMANTIC_BENCHMARK_MODES | LEXICAL_BENCHMARK_MODES
 SUMMARY_MODES = {
     "semantic_graph_rerank_summaries",
     "lexical_graph_vector_rerank_summaries",
@@ -52,6 +53,115 @@ SUMMARY_MODES = {
 DEFAULT_BENCHMARKS: List[Dict[str, object]] = []
 
 DEFAULT_INTERACTIVE_SCENARIOS: List[Dict[str, object]] = []
+
+
+def load_benchmark_cases(
+    *,
+    cases_root: Optional[Path] = None,
+    case_paths: Sequence[Path] = (),
+) -> List[Dict[str, object]]:
+    source_paths: List[Path] = []
+    if cases_root is not None and cases_root.exists():
+        source_paths.extend(
+            path
+            for path in sorted(cases_root.rglob("*"))
+            if path.is_file() and path.suffix.lower() in BENCHMARK_CASE_SUFFIXES
+        )
+    for path in case_paths:
+        if not path.exists():
+            raise FileNotFoundError(f"Benchmark case file does not exist: {path}")
+        if path.is_dir():
+            source_paths.extend(
+                child
+                for child in sorted(path.rglob("*"))
+                if child.is_file() and child.suffix.lower() in BENCHMARK_CASE_SUFFIXES
+            )
+        else:
+            source_paths.append(path)
+
+    cases: List[Dict[str, object]] = []
+    for path in source_paths:
+        cases.extend(load_benchmark_cases_file(path))
+    return cases
+
+
+def load_benchmark_cases_file(path: Path) -> List[Dict[str, object]]:
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        cases = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                payload = json.loads(stripped)
+                if not isinstance(payload, dict):
+                    raise ValueError(f"Benchmark case at {path}:{line_number} must be a JSON object")
+                cases.append(normalize_benchmark_case(payload, source=path, ordinal=line_number))
+        return cases
+    if suffix == ".json":
+        payload = load_json(path)
+        raw_cases = payload.get("benchmarks", payload.get("cases", payload)) if isinstance(payload, dict) else payload
+        if isinstance(raw_cases, dict):
+            raw_cases = [raw_cases]
+        if not isinstance(raw_cases, list):
+            raise ValueError(f"Benchmark JSON file must contain a case object or list: {path}")
+        return [
+            normalize_benchmark_case(raw_case, source=path, ordinal=index)
+            for index, raw_case in enumerate(raw_cases, start=1)
+        ]
+    raise ValueError(f"Unsupported benchmark case suffix for {path}; expected .json or .jsonl")
+
+
+def normalize_benchmark_case(raw_case: Dict[str, object], *, source: Path, ordinal: int) -> Dict[str, object]:
+    case = dict(raw_case)
+    for key in ("name", "repo", "query"):
+        if not str(case.get(key) or ""):
+            raise ValueError(f"Benchmark case {source}:{ordinal} is missing required field: {key}")
+    case.setdefault("task_type", "retrieval")
+
+    expected_paths = normalize_string_list(case.get("expected_paths"))
+    if not expected_paths and case.get("expected_path"):
+        expected_paths = [str(case["expected_path"])]
+    expected_symbols = normalize_string_list(case.get("expected_symbols"))
+    if not expected_symbols and case.get("expected_name"):
+        expected_symbols = [str(case["expected_name"])]
+    if not expected_symbols and case.get("expected_symbol"):
+        expected_symbols = [str(case["expected_symbol"])]
+
+    if not expected_paths and not expected_symbols:
+        raise ValueError(
+            f"Benchmark case {source}:{ordinal} must define expected_path(s) or expected_symbol(s)"
+        )
+
+    case["name"] = str(case["name"])
+    case["repo"] = str(case["repo"])
+    case["query"] = str(case["query"])
+    case["task_type"] = str(case["task_type"])
+    case["expected_paths"] = expected_paths
+    case["expected_symbols"] = expected_symbols
+    case["expected_path"] = str(case.get("expected_path") or (expected_paths[0] if expected_paths else ""))
+    case["expected_name"] = str(case.get("expected_name") or (expected_symbols[0] if expected_symbols else ""))
+    case["expected_terms"] = normalize_string_list(case.get("expected_terms"))
+    case["source"] = str(source)
+    return case
+
+
+def normalize_benchmark_cases(raw_cases: Sequence[Dict[str, object]], *, source: Path = Path("<memory>")) -> List[Dict[str, object]]:
+    return [
+        normalize_benchmark_case(raw_case, source=source, ordinal=index)
+        for index, raw_case in enumerate(raw_cases, start=1)
+    ]
+
+
+def normalize_string_list(value: object) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Sequence):
+        return [str(item) for item in value if str(item)]
+    return [str(value)]
 
 
 def run_benchmarks(
@@ -67,10 +177,19 @@ def run_benchmarks(
     progress_callback=None,
 ) -> Dict[str, object]:
     started = time.perf_counter()
-    benchmark_cases = list(benchmarks or DEFAULT_BENCHMARKS)
+    benchmark_cases = normalize_benchmark_cases(DEFAULT_BENCHMARKS if benchmarks is None else benchmarks)
+    if not benchmark_cases:
+        raise ValueError(
+            "No benchmark cases configured; add JSON/JSONL cases under data/eval/cases or pass benchmarks explicitly"
+        )
     selected_repos = set(repos or [item["repo"] for item in benchmark_cases])
     cases = [item for item in benchmark_cases if item["repo"] in selected_repos]
+    if not cases:
+        raise ValueError(f"No benchmark cases matched repos: {', '.join(sorted(selected_repos))}")
     selected_modes = tuple(modes or DEFAULT_MODES)
+    unsupported_modes = sorted(set(selected_modes) - SUPPORTED_BENCHMARK_MODES)
+    if unsupported_modes:
+        raise ValueError(f"Unsupported benchmark modes: {', '.join(unsupported_modes)}")
     total_runs = len(cases) * len(selected_modes)
 
     def emit(event: str, **extra: object) -> None:
@@ -105,6 +224,10 @@ def run_benchmarks(
                 completed_runs=completed_runs,
                 exact_hit=latest["exact_hit"],
                 path_hit=latest["path_hit"],
+                symbol_hit=latest["symbol_hit"],
+                recall_at_k=latest["retrieval_metrics"]["recall_at_k"],
+                mrr=latest["retrieval_metrics"]["mrr"],
+                ndcg=latest["retrieval_metrics"]["ndcg"],
                 latency_ms=latest["latency_ms"],
             )
 
@@ -229,7 +352,7 @@ def export_benchmark_prompts(
     limit: int = 8,
     benchmarks: Optional[Sequence[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
-    benchmark_cases = list(benchmarks or DEFAULT_BENCHMARKS)
+    benchmark_cases = normalize_benchmark_cases(DEFAULT_BENCHMARKS if benchmarks is None else benchmarks)
     selected_repos = set(repos or [item["repo"] for item in benchmark_cases])
     cases = [item for item in benchmark_cases if item["repo"] in selected_repos]
     export_root = eval_root / "prompt_exports"
@@ -279,7 +402,7 @@ def score_answer_bundles(
     limit: int = 8,
     benchmarks: Optional[Sequence[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
-    benchmark_cases = list(benchmarks or DEFAULT_BENCHMARKS)
+    benchmark_cases = normalize_benchmark_cases(DEFAULT_BENCHMARKS if benchmarks is None else benchmarks)
     selected_repos = set(repos or [item["repo"] for item in benchmark_cases])
     cases = [item for item in benchmark_cases if item["repo"] in selected_repos]
     cache_path = ensure_eval_cache_database(eval_root)
@@ -349,7 +472,10 @@ def score_external_answers(
     *,
     benchmarks: Optional[Sequence[Dict[str, object]]] = None,
 ) -> Dict[str, object]:
-    benchmark_cases = {item["name"]: item for item in list(benchmarks or DEFAULT_BENCHMARKS)}
+    benchmark_cases = {
+        item["name"]: item
+        for item in normalize_benchmark_cases(DEFAULT_BENCHMARKS if benchmarks is None else benchmarks)
+    }
     answers_payload = load_json(answers_path)
     raw_answers = answers_payload.get("answers", answers_payload)
     if isinstance(raw_answers, list):
@@ -382,11 +508,20 @@ def run_case(
     limit: int,
 ) -> Dict[str, object]:
     started = time.perf_counter()
-    if mode in DISABLED_NO_EMBEDDING_MODES:
-        raise ValueError(f"Benchmark mode {mode} is disabled because embeddings are mandatory")
     if mode == "embedding_only":
         selected = query_embedding_index(search_root, case["repo"], case["query"], limit=limit)
         context_summary = {"mode": "embedding_only"}
+    elif mode == "lexical_only":
+        search_backend = get_search_backend(str(search_root.resolve()), str(case["repo"]))
+        selected = search_backend.search(str(case["query"]), limit=limit)
+        context_summary = {
+            "mode": "lexical_only",
+            "search_backend": "tantivy",
+            "selected": len(selected),
+            "embeddings_enabled": False,
+            "graph_enabled": False,
+            "rerank_enabled": False,
+        }
     else:
         context = retrieve_context(
             search_root,
@@ -404,24 +539,22 @@ def run_case(
         context_summary = context["summary"]
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
 
-    exact_hit = False
-    path_hit = False
-    for item in selected:
-        if item.get("path") == case["expected_path"]:
-            path_hit = True
-        if item.get("path") == case["expected_path"] and item.get("name") == case["expected_name"]:
-            exact_hit = True
+    retrieval_metrics = score_retrieval(case, selected, limit)
+    exact_hit = bool(retrieval_metrics["exact_hit"])
+    path_hit = bool(retrieval_metrics["expected_path_hit"])
+    symbol_hit = bool(retrieval_metrics["expected_symbol_hit"])
     answer_quality = grade_answer_quality(case, selected)
     bundle_quality = None
-    bundle = prepare_answer_bundle(
-        search_root,
-        graph_root,
-        parsed_root,
-        case["query"],
-        repo_name=case["repo"],
-        limit=limit,
-    )
-    bundle_quality = score_bundle(case, bundle)
+    if mode not in LEXICAL_BENCHMARK_MODES:
+        bundle = prepare_answer_bundle(
+            search_root,
+            graph_root,
+            parsed_root,
+            case["query"],
+            repo_name=case["repo"],
+            limit=limit,
+        )
+        bundle_quality = score_bundle(case, bundle)
 
     return {
         "name": case["name"],
@@ -431,9 +564,13 @@ def run_case(
         "mode": mode,
         "expected_path": case["expected_path"],
         "expected_name": case["expected_name"],
+        "expected_paths": case.get("expected_paths", []),
+        "expected_symbols": case.get("expected_symbols", []),
         "latency_ms": elapsed_ms,
         "exact_hit": exact_hit,
         "path_hit": path_hit,
+        "symbol_hit": symbol_hit,
+        "retrieval_metrics": retrieval_metrics,
         "files_opened": count_unique_paths(selected),
         "prepared_tokens": estimate_prepared_tokens(selected),
         "selected_count": len(selected),
@@ -457,6 +594,10 @@ def summarize_runs(runs: Sequence[Dict[str, object]]) -> Dict[str, object]:
                 "runs": len(mode_runs),
                 "exact_hits": sum(1 for run in mode_runs if run["exact_hit"]),
                 "path_hits": sum(1 for run in mode_runs if run["path_hit"]),
+                "symbol_hits": sum(1 for run in mode_runs if run["symbol_hit"]),
+                "avg_recall_at_k": average(run["retrieval_metrics"]["recall_at_k"] for run in mode_runs),
+                "avg_mrr": average(run["retrieval_metrics"]["mrr"] for run in mode_runs),
+                "avg_ndcg": average(run["retrieval_metrics"]["ndcg"] for run in mode_runs),
                 "avg_latency_ms": average(run["latency_ms"] for run in mode_runs),
                 "avg_files_opened": average(run["files_opened"] for run in mode_runs),
                 "avg_prepared_tokens": average(run["prepared_tokens"] for run in mode_runs),
@@ -471,6 +612,10 @@ def summarize_runs(runs: Sequence[Dict[str, object]]) -> Dict[str, object]:
         "runs": len(runs),
         "exact_hits": sum(1 for run in runs if run["exact_hit"]),
         "path_hits": sum(1 for run in runs if run["path_hit"]),
+        "symbol_hits": sum(1 for run in runs if run["symbol_hit"]),
+        "avg_recall_at_k": average(run["retrieval_metrics"]["recall_at_k"] for run in runs),
+        "avg_mrr": average(run["retrieval_metrics"]["mrr"] for run in runs),
+        "avg_ndcg": average(run["retrieval_metrics"]["ndcg"] for run in runs),
         "avg_latency_ms": average(run["latency_ms"] for run in runs),
     }
     consumer_metrics = {
@@ -488,6 +633,133 @@ def summarize_runs(runs: Sequence[Dict[str, object]]) -> Dict[str, object]:
         "retrieval_metrics": retrieval_metrics,
         "consumer_readiness": consumer_metrics,
     }
+
+
+def score_retrieval(case: Dict[str, object], selected: Sequence[Dict[str, object]], limit: int) -> Dict[str, object]:
+    expected_paths = [normalize_path_match(path) for path in case.get("expected_paths", []) if str(path)]
+    expected_symbols = [normalize_symbol_match(symbol) for symbol in case.get("expected_symbols", []) if str(symbol)]
+    expected_units = [f"path:{path}" for path in expected_paths] + [f"symbol:{symbol}" for symbol in expected_symbols]
+    top_selected = list(selected[:limit])
+
+    path_ranks = ranks_for_expected_paths(top_selected, expected_paths)
+    symbol_ranks = ranks_for_expected_symbols(top_selected, expected_symbols)
+    matched_units_at_k = set()
+    exact_hit = False
+    relevance_by_rank = []
+    for item in top_selected:
+        item_path = normalize_path_match(item.get("path"))
+        item_symbols = item_symbol_matches(item)
+        item_units = set()
+        if item_path in expected_paths:
+            item_units.add(f"path:{item_path}")
+        for symbol in expected_symbols:
+            if symbol in item_symbols:
+                item_units.add(f"symbol:{symbol}")
+        if item_path in expected_paths and item_symbols.intersection(expected_symbols):
+            exact_hit = True
+        matched_units_at_k.update(item_units)
+        relevance_by_rank.append(1.0 if item_units else 0.0)
+
+    expected_unit_count = len(expected_units)
+    first_relevant_rank = min([*path_ranks.values(), *symbol_ranks.values()], default=None)
+    recall_by_k = {
+        f"recall_at_{k}": recall_at_k(top_selected, case, k)
+        for k in METRIC_K_VALUES
+        if k <= limit
+    }
+    recall_by_k["recall_at_k"] = round(len(matched_units_at_k) / expected_unit_count, 3) if expected_unit_count else 0.0
+
+    return {
+        "k": limit,
+        **recall_by_k,
+        "mrr": round(1.0 / first_relevant_rank, 3) if first_relevant_rank else 0.0,
+        "ndcg": ndcg(relevance_by_rank, expected_unit_count),
+        "expected_path_hit": bool(path_ranks),
+        "expected_symbol_hit": bool(symbol_ranks),
+        "exact_hit": exact_hit,
+        "path_recall_at_k": round(len(path_ranks) / len(expected_paths), 3) if expected_paths else 0.0,
+        "symbol_recall_at_k": round(len(symbol_ranks) / len(expected_symbols), 3) if expected_symbols else 0.0,
+        "first_relevant_rank": first_relevant_rank,
+        "path_ranks": path_ranks,
+        "symbol_ranks": symbol_ranks,
+        "expected_units": expected_unit_count,
+        "matched_units": len(matched_units_at_k),
+    }
+
+
+def recall_at_k(selected: Sequence[Dict[str, object]], case: Dict[str, object], k: int) -> float:
+    expected_paths = [normalize_path_match(path) for path in case.get("expected_paths", []) if str(path)]
+    expected_symbols = [normalize_symbol_match(symbol) for symbol in case.get("expected_symbols", []) if str(symbol)]
+    expected_units = {f"path:{path}" for path in expected_paths} | {f"symbol:{symbol}" for symbol in expected_symbols}
+    if not expected_units:
+        return 0.0
+    matched_units = set()
+    for item in selected[:k]:
+        item_path = normalize_path_match(item.get("path"))
+        if item_path in expected_paths:
+            matched_units.add(f"path:{item_path}")
+        item_symbols = item_symbol_matches(item)
+        for symbol in expected_symbols:
+            if symbol in item_symbols:
+                matched_units.add(f"symbol:{symbol}")
+    return round(len(matched_units) / len(expected_units), 3)
+
+
+def ranks_for_expected_paths(selected: Sequence[Dict[str, object]], expected_paths: Sequence[str]) -> Dict[str, int]:
+    ranks: Dict[str, int] = {}
+    for rank, item in enumerate(selected, start=1):
+        item_path = normalize_path_match(item.get("path"))
+        if item_path in expected_paths and item_path not in ranks:
+            ranks[item_path] = rank
+    return ranks
+
+
+def ranks_for_expected_symbols(selected: Sequence[Dict[str, object]], expected_symbols: Sequence[str]) -> Dict[str, int]:
+    ranks: Dict[str, int] = {}
+    for rank, item in enumerate(selected, start=1):
+        item_symbols = item_symbol_matches(item)
+        for expected_symbol in expected_symbols:
+            if expected_symbol in item_symbols and expected_symbol not in ranks:
+                ranks[expected_symbol] = rank
+    return ranks
+
+
+def item_symbol_matches(item: Dict[str, object]) -> set[str]:
+    values = {
+        item.get("name"),
+        item.get("qualified_name"),
+        item.get("symbol_id"),
+        item.get("title"),
+        item.get("doc_id"),
+    }
+    return {normalize_symbol_match(value) for value in values if str(value or "")}
+
+
+def normalize_path_match(value: object) -> str:
+    text = str(value or "").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+def normalize_symbol_match(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def ndcg(relevance_by_rank: Sequence[float], expected_unit_count: int) -> float:
+    if expected_unit_count <= 0:
+        return 0.0
+    dcg = 0.0
+    for index, relevance in enumerate(relevance_by_rank, start=1):
+        if relevance:
+            dcg += float(relevance) / log2(index + 1)
+    ideal_count = min(expected_unit_count, len(relevance_by_rank))
+    idcg = sum(1.0 / log2(index + 1) for index in range(1, ideal_count + 1))
+    return round(dcg / idcg, 3) if idcg else 0.0
+
+
+def log2(value: int) -> float:
+    return math.log2(value)
 
 
 def score_bundle(case: Dict[str, object], bundle: Dict[str, object]) -> Dict[str, object]:
@@ -754,6 +1026,10 @@ def summarize_task_types(runs: Sequence[Dict[str, object]]) -> List[Dict[str, ob
             "runs": len(task_runs),
             "exact_hits": sum(1 for run in task_runs if run["exact_hit"]),
             "path_hits": sum(1 for run in task_runs if run["path_hit"]),
+            "symbol_hits": sum(1 for run in task_runs if run["symbol_hit"]),
+            "avg_recall_at_k": average(run["retrieval_metrics"]["recall_at_k"] for run in task_runs),
+            "avg_mrr": average(run["retrieval_metrics"]["mrr"] for run in task_runs),
+            "avg_ndcg": average(run["retrieval_metrics"]["ndcg"] for run in task_runs),
             "avg_answer_score": average(run["answer_quality"]["score"] for run in task_runs),
             "avg_bundle_score": average(
                 run["bundle_quality"]["score"] for run in task_runs if run.get("bundle_quality") is not None

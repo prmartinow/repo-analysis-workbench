@@ -42,7 +42,13 @@ from backends.tantivy.search import TantivySearchBackend, build_query_variants, 
 from common.telemetry import reset_telemetry, snapshot_telemetry
 from embeddings.indexer import build_embedding_index, query_embedding_index
 from embeddings.providers import resolve_embedding_provider
-from evaluation.harness import export_benchmark_prompts, run_benchmarks, score_answer_bundles, score_external_answers
+from evaluation.harness import (
+    export_benchmark_prompts,
+    load_benchmark_cases,
+    run_benchmarks,
+    score_answer_bundles,
+    score_external_answers,
+)
 from evaluation.harness import benchmark_interactive_commands
 from graph.builder import build_graph_artifact
 from graph.query import inspect_graph_backend_payload_uncached
@@ -840,35 +846,85 @@ class SearchAndSummaryTest(unittest.TestCase):
 
             run = payload["runs"][0]
             self.assertIn("answer_quality", run)
+            self.assertIn("retrieval_metrics", run)
+            self.assertGreater(run["retrieval_metrics"]["recall_at_k"], 0)
+            self.assertGreater(run["retrieval_metrics"]["mrr"], 0)
+            self.assertGreater(run["retrieval_metrics"]["ndcg"], 0)
             self.assertGreater(run["answer_quality"]["score"], 0.5)
+            self.assertIn("avg_recall_at_k", payload["summary"]["modes"][0])
             self.assertIn("avg_answer_score", payload["summary"]["modes"][0])
             self.assertTrue((eval_root / "benchmarks.json").exists())
 
-    def test_benchmark_harness_rejects_no_embedding_modes(self) -> None:
+    def test_benchmark_harness_loads_jsonl_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cases_root = root / "cases"
+            cases_root.mkdir()
+            (cases_root / "demo.jsonl").write_text(
+                json.dumps(
+                    {
+                        "name": "demo_answer_from_file",
+                        "repo": "demo",
+                        "query": "answer helper",
+                        "expected_paths": ["src/lib.rs"],
+                        "expected_symbols": ["answer"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            cases = load_benchmark_cases(cases_root=cases_root)
+
+            self.assertEqual(cases[0]["task_type"], "retrieval")
+            self.assertEqual(cases[0]["expected_path"], "src/lib.rs")
+            self.assertEqual(cases[0]["expected_name"], "answer")
+
+    def test_benchmark_harness_rejects_empty_case_sets(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             paths = seed_demo_workspace(root)
 
-            with self.assertRaisesRegex(ValueError, "embeddings are mandatory"):
+            with self.assertRaisesRegex(ValueError, "No benchmark cases configured"):
                 run_benchmarks(
                     paths["search_root"],
                     paths["graph_root"],
                     paths["parsed_root"],
                     root / "eval",
                     repos=("demo",),
-                    modes=("lexical_only",),
-                    benchmarks=[
-                        {
-                            "name": "demo_answer",
-                            "repo": "demo",
-                            "task_type": "symbol_lookup",
-                            "query": "answer helper",
-                            "expected_path": "src/lib.rs",
-                            "expected_name": "answer",
-                            "expected_terms": ["answer", "helper"],
-                        }
-                    ],
+                    benchmarks=[],
                 )
+
+    def test_benchmark_harness_allows_lexical_eval_without_embeddings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            paths = seed_demo_workspace(root)
+            (paths["search_root"] / "demo" / "embedding_index.json").unlink()
+
+            payload = run_benchmarks(
+                paths["search_root"],
+                paths["graph_root"],
+                paths["parsed_root"],
+                root / "eval",
+                repos=("demo",),
+                modes=("lexical_only",),
+                benchmarks=[
+                    {
+                        "name": "demo_answer",
+                        "repo": "demo",
+                        "task_type": "symbol_lookup",
+                        "query": "answer helper",
+                        "expected_path": "src/lib.rs",
+                        "expected_name": "answer",
+                        "expected_terms": ["answer", "helper"],
+                    }
+                ],
+            )
+
+            run = payload["runs"][0]
+            self.assertTrue(run["path_hit"])
+            self.assertIsNone(run["bundle_quality"])
+            self.assertFalse(run["context_summary"]["embeddings_enabled"])
 
     def test_interactive_benchmark_report_captures_stage1_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
