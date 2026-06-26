@@ -27,7 +27,7 @@ The implementation is complete only when repo-analysis can:
 | 4 | Generic non-Rust summary fallback | Done | Repos with zero symbols get project, directory, and file summaries from raw inventory, marked `inventory_fallback` and `shallow`. |
 | 5 | Tree-sitter tag provider | Done | Python, Go, JS/TS, shell, and YAML/config files can produce provider-normalized `tree_sitter_tags` symbols where grammars are available. |
 | 6 | SCIP JSON importer | Done | `.scip`/`.scip.json` indexes can be imported into symbols, references, and graph edges through `build-index --scip-index`. |
-| 7 | Zoekt sidecar comparison | Not started | CLI can build/query Zoekt and compare ranking/latency against Tantivy. |
+| 7 | Zoekt sidecar comparison | Done | CLI can build/query Zoekt sidecar indexes and compare Zoekt path results against Tantivy lexical search. |
 | 8 | AI-tooling benchmark reports | Not started | Benchmark reports exist for the selected `/mnt/workspace/AI tooling` repos and show per-mode quality. |
 
 ## Implementation Order
@@ -384,11 +384,10 @@ At the start and end of each implementation session:
 
 Overall status: not complete.
 
-Current next milestone: Zoekt sidecar comparison.
+Current next milestone: AI-tooling benchmark reports.
 
-Current risk: SCIP import now works when an index exists, but most candidate
-repos still need language-specific SCIP indexers before this precision is
-available at scale.
+Current risk: sidecar search comparison works, but the selected AI-tooling repos
+still need benchmark reports that show retrieval quality per mode.
 
 Latest verification:
 
@@ -415,4 +414,11 @@ python3 src/cli/main.py build-search --raw-root /mnt/workspace/code-intel/scip-f
 python3 src/cli/main.py find-symbol --search-root /mnt/workspace/code-intel/scip-fixture-artifacts/search --repo scip-demo run --limit 5
 python3 src/cli/main.py build-summaries --raw-root /mnt/workspace/code-intel/scip-fixture-artifacts/raw --parsed-root /mnt/workspace/code-intel/scip-fixture-artifacts/parsed --graph-root /mnt/workspace/code-intel/scip-fixture-artifacts/graph --summary-root /mnt/workspace/code-intel/scip-fixture-artifacts/summaries --repo scip-demo
 python3 src/cli/main.py repo-overview --parsed-root /mnt/workspace/code-intel/scip-fixture-artifacts/parsed --repo scip-demo
+python3 -m unittest tests.unit.test_zoekt_backend
+python3 -m py_compile src/search/zoekt_backend.py src/cli/main.py tests/unit/test_zoekt_backend.py
+sudo apt-get install -y golang-go
+GOBIN=/mnt/workspace/code-intel/bin go install ./cmd/zoekt-index ./cmd/zoekt
+python3 src/cli/main.py build-zoekt --workspace-root "/mnt/workspace/AI tooling" --zoekt-root /mnt/workspace/code-intel/repo-analysis-pilot/zoekt --repo agent-kit --zoekt-index-bin /mnt/workspace/code-intel/bin/zoekt-index
+python3 src/cli/main.py search-zoekt --zoekt-root /mnt/workspace/code-intel/repo-analysis-pilot/zoekt --repo agent-kit mustExist --limit 5 --zoekt-bin /mnt/workspace/code-intel/bin/zoekt
+python3 src/cli/main.py compare-search-backends --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --zoekt-root /mnt/workspace/code-intel/repo-analysis-pilot/zoekt --repo agent-kit mustExist --limit 5 --zoekt-bin /mnt/workspace/code-intel/bin/zoekt
 ```

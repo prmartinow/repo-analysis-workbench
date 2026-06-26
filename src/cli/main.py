@@ -19,6 +19,7 @@ DEFAULT_GRAPH_ROOT = DATA_ROOT / "graph"
 DEFAULT_SEARCH_ROOT = DATA_ROOT / "search"
 DEFAULT_SUMMARY_ROOT = DATA_ROOT / "summaries"
 DEFAULT_EVAL_ROOT = DATA_ROOT / "eval"
+DEFAULT_ZOEKT_ROOT = DATA_ROOT / "zoekt"
 
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
@@ -68,6 +69,7 @@ from evaluation.harness import (
 from graph.builder import build_graph_artifact
 from graph.store import write_graph_database
 from search.indexer import build_search_index
+from search.zoekt_backend import build_zoekt_index, search_zoekt_index
 from summaries.builder import build_summary_artifacts, sync_summary_state
 from symbols.indexer import build_symbol_index, current_rss_mb
 from symbols.persistence import update_lmdb_artifact_metadata, write_metadata_bundle
@@ -153,6 +155,14 @@ def add_summary_root_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_zoekt_root_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--zoekt-root",
+        default=str(DEFAULT_ZOEKT_ROOT),
+        help=f"Zoekt sidecar index root. Default: {DEFAULT_ZOEKT_ROOT}",
+    )
+
+
 def add_eval_root_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--eval-root",
@@ -235,6 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_search_root_arg(build_search)
     build_search.add_argument("--repo", action="append")
 
+    build_zoekt = subparsers.add_parser("build-zoekt", help="Build a Zoekt sidecar index for local repos.")
+    add_workspace_root_arg(build_zoekt)
+    add_zoekt_root_arg(build_zoekt)
+    build_zoekt.add_argument("--repo", action="append", help="Restrict Zoekt indexing to one or more repos.")
+    build_zoekt.add_argument("--zoekt-index-bin", help="Path to zoekt-index. Defaults to PATH or REPO_ANALYSIS_ZOEKT_INDEX_BIN.")
+
     build_summaries = subparsers.add_parser(
         "build-summaries",
         help="Build deterministic project/directory/file/symbol summaries.",
@@ -290,6 +306,22 @@ def build_parser() -> argparse.ArgumentParser:
     search_lexical_cmd.add_argument("--kind", action="append")
     search_lexical_cmd.add_argument("--path-prefix")
     search_lexical_cmd.add_argument("--limit", type=int, default=10)
+
+    search_zoekt_cmd = subparsers.add_parser("search-zoekt", help="Run a query against a Zoekt sidecar index.")
+    add_zoekt_root_arg(search_zoekt_cmd)
+    search_zoekt_cmd.add_argument("--repo", required=True)
+    search_zoekt_cmd.add_argument("query")
+    search_zoekt_cmd.add_argument("--limit", type=int, default=10)
+    search_zoekt_cmd.add_argument("--symbol", action="store_true", help="Use Zoekt symbol search mode.")
+    search_zoekt_cmd.add_argument("--zoekt-bin", help="Path to zoekt. Defaults to PATH or REPO_ANALYSIS_ZOEKT_BIN.")
+
+    compare_search_cmd = subparsers.add_parser("compare-search-backends", help="Compare Tantivy lexical and Zoekt sidecar results.")
+    add_search_root_arg(compare_search_cmd)
+    add_zoekt_root_arg(compare_search_cmd)
+    compare_search_cmd.add_argument("--repo", required=True)
+    compare_search_cmd.add_argument("query")
+    compare_search_cmd.add_argument("--limit", type=int, default=10)
+    compare_search_cmd.add_argument("--zoekt-bin", help="Path to zoekt. Defaults to PATH or REPO_ANALYSIS_ZOEKT_BIN.")
 
     embedding_search_cmd = subparsers.add_parser("embedding-search", help="Run semantic search over embedding vectors.")
     add_search_root_arg(embedding_search_cmd)
@@ -853,6 +885,55 @@ def handle_build_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_build_zoekt(args: argparse.Namespace) -> int:
+    workspace_root = Path(args.workspace_root).resolve()
+    zoekt_root = Path(args.zoekt_root).resolve()
+    repo_names = args.repo or discover_workspace_repos(workspace_root)
+    if not repo_names:
+        raise RuntimeError("No repositories found. Pass --repo or set --workspace-root to a directory containing repos.")
+
+    zoekt_root.mkdir(parents=True, exist_ok=True)
+    ok = True
+    for repo_name in repo_names:
+        repo_root = workspace_root / repo_name
+        if not repo_root.exists():
+            raise FileNotFoundError(f"Missing repo root: {repo_root}")
+        payload = build_zoekt_index(
+            repo_name,
+            repo_root,
+            zoekt_root,
+            zoekt_index_bin=args.zoekt_index_bin,
+        )
+        print_json(payload)
+        ok = ok and bool(payload.get("built"))
+    return 0 if ok else 1
+
+
+def compare_search_backends(search_root: Path, zoekt_root: Path, repo_name: str, query: str, *, limit: int, zoekt_bin: str | None) -> Dict[str, object]:
+    lexical = search_lexical(search_root, repo_name, query, limit=limit)
+    zoekt = search_zoekt_index(repo_name, zoekt_root, query, limit=limit, zoekt_bin=zoekt_bin)
+    lexical_paths = [str(result.get("path") or "") for result in lexical.get("results", [])]
+    zoekt_paths = [str(result.get("path") or "") for result in zoekt.get("results", [])]
+    lexical_set = {path for path in lexical_paths if path}
+    zoekt_set = {path for path in zoekt_paths if path}
+    overlap = sorted(lexical_set & zoekt_set)
+    return {
+        "repo": repo_name,
+        "query": query,
+        "limit": limit,
+        "lexical": lexical,
+        "zoekt": zoekt,
+        "comparison": {
+            "lexical_paths": lexical_paths,
+            "zoekt_paths": zoekt_paths,
+            "overlap_paths": overlap,
+            "lexical_only_paths": sorted(lexical_set - zoekt_set),
+            "zoekt_only_paths": sorted(zoekt_set - lexical_set),
+            "overlap_at_k": len(overlap),
+        },
+    }
+
+
 def handle_build_summaries(args: argparse.Namespace) -> int:
     raw_root = Path(args.raw_root).resolve()
     parsed_root = Path(args.parsed_root).resolve()
@@ -1168,6 +1249,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return handle_build_index(args)
     if args.command == "build-search":
         return handle_build_search(args)
+    if args.command == "build-zoekt":
+        return handle_build_zoekt(args)
     if args.command == "build-summaries":
         return handle_build_summaries(args)
     if args.command == "build-embeddings":
@@ -1191,6 +1274,28 @@ def main(argv: Optional[List[str]] = None) -> int:
                 path_prefix=args.path_prefix,
             )
         )
+    if args.command == "search-zoekt":
+        payload = search_zoekt_index(
+            args.repo,
+            Path(args.zoekt_root).resolve(),
+            args.query,
+            limit=args.limit,
+            symbol=args.symbol,
+            zoekt_bin=args.zoekt_bin,
+        )
+        print_json(payload)
+        return 0 if payload.get("available") else 1
+    if args.command == "compare-search-backends":
+        payload = compare_search_backends(
+            Path(args.search_root).resolve(),
+            Path(args.zoekt_root).resolve(),
+            args.repo,
+            args.query,
+            limit=args.limit,
+            zoekt_bin=args.zoekt_bin,
+        )
+        print_json(payload)
+        return 0 if payload.get("zoekt", {}).get("available") else 1
     if args.command == "embedding-search":
         return print_json(
             {
