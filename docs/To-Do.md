@@ -1,5 +1,7 @@
 # To-Do List
 
+- Follow the multi-language code-intelligence implementation plan in
+  [Multi-Language Code Intelligence Implementation Plan.md](Multi-Language%20Code%20Intelligence%20Implementation%20Plan.md)
 - Make LMDB map size configurable
 - Make repo's configurable
 - Add staged repo→file→symbol retrieval
