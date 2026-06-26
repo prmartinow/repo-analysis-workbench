@@ -36,6 +36,7 @@ class ZoektBackendTest(unittest.TestCase):
                 self.assertEqual(args[1], "-index")
                 self.assertEqual(args[2], str(zoekt_root / "demo"))
                 self.assertEqual(args[3], str(repo_root))
+                self.assertIsNone(kwargs.get("timeout"))
                 return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
             payload = build_zoekt_index(
@@ -74,6 +75,7 @@ class ZoektBackendTest(unittest.TestCase):
             def fake_runner(args, **kwargs):
                 self.assertEqual(args[:3], ["/bin/zoekt", "-index_dir", str(zoekt_root / "demo")])
                 self.assertIn("-jsonl", args)
+                self.assertIsNone(kwargs.get("timeout"))
                 return subprocess.CompletedProcess(args, 0, stdout=stdout + "\n", stderr="")
 
             payload = search_zoekt_index(

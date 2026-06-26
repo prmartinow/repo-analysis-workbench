@@ -40,9 +40,8 @@ def rust_analyzer_available() -> bool:
             check=True,
             capture_output=True,
             text=True,
-            timeout=5,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.CalledProcessError):
         return False
     return bool(result.stdout.strip())
 
@@ -152,7 +151,7 @@ def document_symbol_probe(command: str, path: Path, source: str, workspace_root:
                 },
             },
         )
-        wait_for_response(queue, request_id, timeout=10.0)
+        wait_for_response(queue, request_id)
         send_lsp_message(process.stdin, {"jsonrpc": "2.0", "method": "initialized", "params": {}})
 
         send_lsp_message(
@@ -181,18 +180,15 @@ def document_symbol_probe(command: str, path: Path, source: str, workspace_root:
                 "params": {"textDocument": {"uri": path.as_uri()}},
             },
         )
-        response = wait_for_response(queue, request_id, timeout=10.0)
+        response = wait_for_response(queue, request_id)
 
         request_id += 1
         send_lsp_message(process.stdin, {"jsonrpc": "2.0", "id": request_id, "method": "shutdown", "params": None})
         try:
-            wait_for_response(queue, request_id, timeout=5.0)
+            wait_for_response(queue, request_id)
         finally:
             send_lsp_message(process.stdin, {"jsonrpc": "2.0", "method": "exit", "params": None})
-            try:
-                process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:  # pragma: no cover - defensive cleanup
-                process.kill()
+            process.wait()
 
     diagnostics = drain_queue(stderr_queue)
     symbols = normalize_document_symbols(response.get("result") or [])
@@ -247,14 +243,11 @@ def read_stderr(handle: object, queue: Queue[str]) -> None:
             queue.put(line)
 
 
-def wait_for_response(queue: Queue[Dict[str, object]], request_id: int, timeout: float) -> Dict[str, object]:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        remaining = max(deadline - time.monotonic(), 0.1)
-        payload = queue.get(timeout=remaining)
+def wait_for_response(queue: Queue[Dict[str, object]], request_id: int) -> Dict[str, object]:
+    while True:
+        payload = queue.get()
         if payload.get("id") == request_id:
             return payload
-    raise TimeoutError(f"Timed out waiting for rust-analyzer response {request_id}")
 
 
 def drain_queue(queue: Queue[str]) -> List[str]:

@@ -35,7 +35,7 @@ def build_zoekt_index(
     index_dir.mkdir(parents=True, exist_ok=True)
     run = runner or subprocess.run
     args = [binary, "-index", str(index_dir), str(repo_root)]
-    result = run(args, check=False, capture_output=True, text=True, timeout=600)
+    result = run(args, check=False, capture_output=True, text=True)
     diagnostics = stderr_lines(result)
     if result.returncode != 0:
         return {
@@ -108,7 +108,7 @@ def search_zoekt_index(
         args.append("-sym")
     args.append(query)
     run = runner or subprocess.run
-    result = run(args, check=False, capture_output=True, text=True, timeout=120)
+    result = run(args, check=False, capture_output=True, text=True)
     diagnostics = stderr_lines(result)
     if result.returncode != 0:
         return {

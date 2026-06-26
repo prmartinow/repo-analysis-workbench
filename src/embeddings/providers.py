@@ -74,7 +74,7 @@ def embed_with_openai(texts: Sequence[str], model: str) -> List[List[float]]:
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=None) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")

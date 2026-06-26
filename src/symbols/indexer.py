@@ -2107,9 +2107,8 @@ def load_cargo_metadata(repo_root: Path) -> Optional[Dict[str, object]]:
             check=True,
             capture_output=True,
             text=True,
-            timeout=60,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.CalledProcessError):
         return None
 
     try:

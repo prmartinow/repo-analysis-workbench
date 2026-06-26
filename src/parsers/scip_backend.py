@@ -179,16 +179,12 @@ def load_scip_index_payload(path: Path, *, runner=None) -> Tuple[Dict[str, objec
     if binary is None:
         return None, [f"{path}: scip executable was not found; install scip or pass a .scip.json file"]
     run = runner or subprocess.run
-    try:
-        result = run(
-            [binary, "print", "--json", str(path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return None, [f"{path}: scip print timed out after 120s: {exc}"]
+    result = run(
+        [binary, "print", "--json", str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
         stderr = result.stderr.strip()
         return None, [f"{path}: scip print exited with code {result.returncode}: {stderr}"]

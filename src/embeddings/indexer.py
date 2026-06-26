@@ -566,7 +566,6 @@ def iter_search_documents(
             tantivy_dir,
             offset=offset,
             limit=batch_size,
-            timeout=300,
         )
         batch = payload.get("results", [])
         if not batch:

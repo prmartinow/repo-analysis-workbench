@@ -49,7 +49,6 @@ def probe_universal_ctags(
     repo_map: Dict[str, object],
     *,
     path_prefixes: Sequence[str] = (),
-    timeout: int = 120,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> Dict[str, object]:
     started = time.perf_counter()
@@ -98,27 +97,13 @@ def probe_universal_ctags(
             "-L",
             list_file.name,
         ]
-        try:
-            result = run(
-                args,
-                cwd=repo_root,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            return {
-                "backend": "universal_ctags",
-                "available": True,
-                "used": True,
-                "parsed": False,
-                "files": len(files),
-                "symbols": 0,
-                "symbol_records": [],
-                "diagnostics": [f"ctags timed out after {timeout}s: {exc}"],
-                "latency_ms": elapsed_ms(started),
-            }
+        result = run(
+            args,
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
     diagnostics: List[str] = []
     if result.stderr:

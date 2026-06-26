@@ -41,6 +41,7 @@ class CtagsBackendTest(unittest.TestCase):
             def fake_runner(args, **kwargs):
                 self.assertIn("--output-format=json", args)
                 self.assertEqual(kwargs["cwd"], repo_root)
+                self.assertIsNone(kwargs.get("timeout"))
                 stdout = json.dumps(
                     {
                         "_type": "tag",

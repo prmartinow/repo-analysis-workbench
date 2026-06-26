@@ -51,7 +51,6 @@ def ensure_native_binary() -> Optional[Path]:
             check=True,
             capture_output=True,
             text=True,
-            timeout=300,
         )
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
@@ -75,7 +74,6 @@ def run_native_json(
     args: Sequence[str],
     *,
     input_payload: object | None = None,
-    timeout: int = 300,
 ) -> Dict[str, object]:
     binary_path = ensure_native_binary()
     if binary_path is None:
@@ -92,7 +90,6 @@ def run_native_json(
         capture_output=True,
         text=True,
         check=True,
-        timeout=timeout,
     )
     return json.loads(result.stdout or "{}")
 
@@ -105,7 +102,7 @@ def probe_native_worker() -> Dict[str, object]:
             "reason": _NATIVE_DISABLED_REASON or persisted_failure_reason() or "cargo or native manifest missing",
         }
     try:
-        payload = run_native_json(["worker-info"], timeout=120)
+        payload = run_native_json(["worker-info"])
     except Exception as exc:  # pragma: no cover - defensive fallback
         return {
             "available": False,
@@ -118,7 +115,7 @@ def probe_native_worker() -> Dict[str, object]:
 
 def probe_rust_file_native(path: Path) -> Optional[Dict[str, object]]:
     try:
-        return run_native_json(["inspect-rust", "--path", str(path)], timeout=120)
+        return run_native_json(["inspect-rust", "--path", str(path)])
     except Exception:
         return None
 
@@ -132,7 +129,6 @@ def build_bm25_index(documents_path: Path, output_dir: Path) -> Dict[str, object
             "--output-dir",
             str(output_dir),
         ],
-        timeout=300,
     )
 
 
@@ -160,7 +156,7 @@ def query_bm25_index(
         args.extend(["--path-prefix", path_prefix])
     if symbol_id:
         args.extend(["--symbol-id", symbol_id])
-    payload = run_native_json(args, timeout=120)
+    payload = run_native_json(args)
     return list(payload.get("results", []))
 
 
@@ -169,7 +165,6 @@ def list_bm25_docs(
     *,
     offset: int = 0,
     limit: int = 10_000,
-    timeout: int = 300,
 ) -> Dict[str, object]:
     payload = run_native_json(
         [
@@ -181,7 +176,6 @@ def list_bm25_docs(
             "--limit",
             str(limit),
         ],
-        timeout=timeout,
     )
     return {
         "results": list(payload.get("results", [])),
