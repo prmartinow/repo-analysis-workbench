@@ -9,8 +9,13 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from graph.builder import build_graph_artifact
-from symbols.indexer import build_symbol_index
+from graph.builder import MAX_GRAPH_TARGETS_PER_FIELD, build_graph_artifact
+from symbols.indexer import (
+    MAX_SEMANTIC_TARGETS,
+    build_symbol_index,
+    compute_interprocedural_targets,
+    compute_transitive_calls,
+)
 
 
 class SymbolSemanticsTest(unittest.TestCase):
@@ -106,6 +111,73 @@ class SymbolSemanticsTest(unittest.TestCase):
             edge_types = {item["type"] for item in graph["summary"]["edge_counts"]}
             self.assertIn("INHERITS", edge_types)
             self.assertIn("TESTS", edge_types)
+
+    def test_semantic_expansion_caps_dense_target_lists(self) -> None:
+        dense_calls = [
+            {
+                "name": f"callee_{index}",
+                "target_symbol_id": f"sym-callee-{index}",
+                "target_qualified_name": f"demo::callee_{index}",
+            }
+            for index in range(MAX_SEMANTIC_TARGETS + 25)
+        ]
+        resolution_index = {
+            "by_id": {
+                "sym-root": {
+                    "semantic_summary": {
+                        "direct_calls": dense_calls,
+                        "reads": dense_calls,
+                    }
+                }
+            }
+        }
+        direct_calls = [{"target_symbol_id": "sym-root", "target_qualified_name": "demo::root"}]
+
+        transitive = compute_transitive_calls(direct_calls, resolution_index)
+        reads = compute_interprocedural_targets(direct_calls, resolution_index, field_name="reads")
+
+        self.assertEqual(len(transitive), MAX_SEMANTIC_TARGETS)
+        self.assertEqual(len(reads), MAX_SEMANTIC_TARGETS)
+
+    def test_graph_semantic_edges_are_bounded_per_field(self) -> None:
+        targets = [
+            {
+                "name": f"target_{index}",
+                "target_symbol_id": f"sym-target-{index}",
+                "target_qualified_name": f"demo::target_{index}",
+            }
+            for index in range(MAX_GRAPH_TARGETS_PER_FIELD + 25)
+        ]
+        artifact = {
+            "repo": "demo",
+            "generated_at": "2026-06-26T00:00:00Z",
+            "schema_version": "test-v1",
+            "summary": {"files": 1, "symbols": 1, "imports": 0, "references": 0, "statements": 0},
+            "files": [{"path": "src/lib.rs"}],
+            "symbols": [
+                {
+                    "symbol_id": "sym-root",
+                    "path": "src/lib.rs",
+                    "name": "root",
+                    "kind": "function",
+                    "qualified_name": "demo::root",
+                    "line": 1,
+                    "semantic_summary": {"reads": targets},
+                }
+            ],
+            "imports": [],
+            "references": [],
+            "statements": [],
+        }
+
+        graph = build_graph_artifact(artifact)
+        semantic_reads = [
+            edge
+            for edge in graph["edges"]
+            if edge["type"] == "READS" and edge["metadata"].get("semantic_level") == "symbol"
+        ]
+
+        self.assertEqual(len(semantic_reads), MAX_GRAPH_TARGETS_PER_FIELD)
 
 
 if __name__ == "__main__":

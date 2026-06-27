@@ -7,6 +7,9 @@ from typing import Dict, List
 
 from symbols.indexer import stable_id, timestamp_now
 
+MAX_GRAPH_TARGETS_PER_FIELD = 50
+MAX_DATA_FLOW_READS_PER_STATEMENT = 50
+
 
 def build_graph_artifact(symbol_index: Dict[str, object]) -> Dict[str, object]:
     repo_name = symbol_index["repo"]
@@ -712,7 +715,7 @@ def append_statement_graph(
             )
 
         for edge_type, field_name in (("DEFINES", "defines"), ("READS", "reads"), ("WRITES", "writes"), ("REFS", "reads"), ("CALLS", "calls")):
-            for target in statement.get(field_name, []):
+            for target in list(statement.get(field_name, []))[:MAX_GRAPH_TARGETS_PER_FIELD]:
                 target_node_id = resolve_target_node(
                     nodes,
                     node_ids,
@@ -745,7 +748,7 @@ def append_statement_graph(
             key=lambda item: (item["span"]["start_line"], item["span"]["start_column"], item["statement_id"]),
         )
         for statement in sorted_statements:
-            for read in statement.get("reads", []):
+            for read in list(statement.get("reads", []))[:MAX_DATA_FLOW_READS_PER_STATEMENT]:
                 target_key = statement_target_key(read)
                 if not target_key or target_key not in last_write_by_target:
                     continue
@@ -789,7 +792,7 @@ def append_symbol_semantic_edges(
             ("REFS", "interprocedural_references", "interprocedural"),
             ("CALLS", "transitive_calls", "transitive"),
         ):
-            for target in semantic_summary.get(field_name, []):
+            for target in list(semantic_summary.get(field_name, []))[:MAX_GRAPH_TARGETS_PER_FIELD]:
                 target_node_id = resolve_target_node(
                     nodes,
                     node_ids,

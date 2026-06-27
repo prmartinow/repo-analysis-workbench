@@ -68,6 +68,8 @@ VARIANT_RE = re.compile(
 
 FUNCTION_LIKE_KINDS = {"function", "method"}
 CACHE_SCHEMA_VERSION = "rust-file-cache-v1"
+MAX_SEMANTIC_TARGETS = 50
+MAX_SEMANTIC_FRONTIER = 100
 KEYWORDS = {
     "Self",
     "as",
@@ -814,6 +816,7 @@ def compute_transitive_calls(
 ) -> List[Dict[str, object]]:
     transitive: List[Dict[str, object]] = []
     seen = set()
+    target_keys = set()
     frontier = [dict(item) for item in direct_calls]
     depth = 0
 
@@ -830,8 +833,11 @@ def compute_transitive_calls(
             semantic_summary = target_symbol.get("semantic_summary") or {}
             for nested in semantic_summary.get("direct_calls", []):
                 nested_copy = dict(nested)
-                append_unique_target(transitive, nested_copy)
-                next_frontier.append(nested_copy)
+                if append_unique_target(transitive, nested_copy, seen_keys=target_keys):
+                    if len(transitive) >= MAX_SEMANTIC_TARGETS:
+                        return transitive
+                if len(next_frontier) < MAX_SEMANTIC_FRONTIER:
+                    next_frontier.append(nested_copy)
         frontier = next_frontier
         depth += 1
 
@@ -846,6 +852,7 @@ def compute_interprocedural_targets(
     max_depth: int = 3,
 ) -> List[Dict[str, object]]:
     aggregated: List[Dict[str, object]] = []
+    target_keys = set()
     seen_symbols = set()
     frontier = [item.get("target_symbol_id") for item in direct_calls if item.get("target_symbol_id")]
     depth = 0
@@ -861,10 +868,16 @@ def compute_interprocedural_targets(
                 continue
             semantic_summary = target_symbol.get("semantic_summary") or {}
             for target in semantic_summary.get(field_name, []):
-                append_unique_target(aggregated, dict(target))
+                if append_unique_target(aggregated, dict(target), seen_keys=target_keys):
+                    if len(aggregated) >= MAX_SEMANTIC_TARGETS:
+                        return aggregated
             for nested in semantic_summary.get("direct_calls", []):
                 nested_symbol_id = nested.get("target_symbol_id")
-                if nested_symbol_id and nested_symbol_id not in seen_symbols:
+                if (
+                    nested_symbol_id
+                    and nested_symbol_id not in seen_symbols
+                    and len(next_frontier) < MAX_SEMANTIC_FRONTIER
+                ):
                     next_frontier.append(nested_symbol_id)
         frontier = next_frontier
         depth += 1
@@ -1627,18 +1640,30 @@ def make_target_entry(expression: str, resolved: Dict[str, Optional[str]]) -> Di
     }
 
 
-def append_unique_target(targets: List[Dict[str, object]], entry: Dict[str, object]) -> None:
+def append_unique_target(
+    targets: List[Dict[str, object]],
+    entry: Dict[str, object],
+    *,
+    seen_keys: set[tuple[object, object, object]] | None = None,
+) -> bool:
     key = (
         entry.get("target_symbol_id"),
         entry.get("target_qualified_name"),
         entry.get("name"),
     )
+    if seen_keys is not None:
+        if key in seen_keys:
+            return False
+        seen_keys.add(key)
+        targets.append(entry)
+        return True
     if any(
         (item.get("target_symbol_id"), item.get("target_qualified_name"), item.get("name")) == key
         for item in targets
     ):
-        return
+        return False
     targets.append(entry)
+    return True
 
 
 def discover_rust_files(repo_root: Path, parser_roots: Iterable[str], path_prefixes: Sequence[str]) -> List[Path]:
