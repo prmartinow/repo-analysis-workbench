@@ -9,6 +9,8 @@ from typing import Dict, List, Optional, Sequence
 
 import lmdb
 
+from backends.lmdb.keys import encode_key
+
 
 @dataclass(frozen=True)
 class LmdbMetadataStore:
@@ -199,10 +201,6 @@ def open_lmdb_env(path: str, *, readonly: bool) -> lmdb.Environment:
         readahead=readonly,
         map_size=1 << 36,
     )
-
-
-def encode_key(value: str) -> bytes:
-    return value.encode("utf-8")
 
 
 def encode_value(value: object) -> bytes:

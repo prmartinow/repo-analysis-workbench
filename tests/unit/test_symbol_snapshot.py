@@ -10,6 +10,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from graph.builder import build_graph_artifact
+from backends.lmdb.store import LmdbMetadataStore
 from symbols.indexer import build_symbol_index
 from symbols.persistence import load_symbol_index, write_metadata_bundle
 
@@ -146,3 +147,41 @@ class SymbolSnapshotTest(unittest.TestCase):
             self.assertEqual(len(restored["imports"]), artifact["summary"]["imports"])
             self.assertEqual(len(restored["references"]), artifact["summary"]["references"])
             self.assertEqual(len(restored["statements"]), artifact["summary"]["statements"])
+
+    def test_persistence_handles_overlong_lmdb_lookup_keys(self) -> None:
+        long_qname = "::".join(["very_long_scope_name"] * 80)
+        symbol_id = "sym-long"
+        artifact = {
+            "schema_version": "test-v1",
+            "repo": "demo",
+            "generated_at": "2026-06-26T00:00:00Z",
+            "parser": "fixture",
+            "summary": {"files": 1, "symbols": 1, "imports": 0, "references": 0, "statements": 0},
+            "primary_parser_backends": [],
+            "parser_backends": {},
+            "source_roots": ["src"],
+            "path_prefixes": [],
+            "files": [{"path": "src/lib.rs"}],
+            "symbols": [
+                {
+                    "symbol_id": symbol_id,
+                    "path": "src/lib.rs",
+                    "name": "demo",
+                    "qualified_name": long_qname,
+                    "signature": "fn demo()",
+                }
+            ],
+            "imports": [],
+            "references": [],
+            "statements": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_root = Path(tmpdir) / "parsed"
+            write_metadata_bundle(output_root, "demo", artifact)
+
+            restored = load_symbol_index(output_root, "demo")
+            self.assertEqual(restored["symbols"][0]["qualified_name"], long_qname)
+
+            store = LmdbMetadataStore(output_root, "demo")
+            self.assertEqual(store.resolve_qname(long_qname), [symbol_id])

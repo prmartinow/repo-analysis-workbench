@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 import lmdb
 
+from backends.lmdb.keys import encode_key
 from common.telemetry import increment_counter, trace_operation
 
 
@@ -249,10 +250,6 @@ def update_lmdb_artifact_metadata(parsed_root: Path, repo_name: str, updates: Di
         env.close()
 
 
-def encode_key(value: str) -> bytes:
-    return value.encode("utf-8")
-
-
 def encode_value(value: object) -> bytes:
     return json.dumps(value, sort_keys=True).encode("utf-8")
 
@@ -369,4 +366,3 @@ def load_summary_bundle_from_metadata(parsed_root: Path, repo_name: str) -> Dict
             return None
     finally:
         env.close()
-
