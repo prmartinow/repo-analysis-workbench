@@ -50,7 +50,7 @@ Build artifacts for one repository:
 ./scripts/build_embeddings.sh --repo target-repo
 ```
 
-Embedding retrieval expects the batch-built sidecar to exist. `prepare-context`, `prepare-answer-bundle`, and benchmark retrieval always query this sidecar; missing embeddings are treated as an artifact build failure. The default provider is the local RPC Qwen inference service:
+Embedding retrieval expects the batch-built sidecar to exist. `prepare-context`, `prepare-answer-bundle`, and benchmark retrieval always query this sidecar; missing embeddings are treated as an artifact build failure. The embedding sidecar indexes bounded retrieval units such as line windows, symbol bodies, statements, and doc sections, then aggregates matches back to files or symbols with `maxp`; it does not send whole large files to the model. The default provider is the local RPC Qwen inference service:
 
 ```bash
 ./scripts/build_embeddings.sh --repo target-repo --provider qwen --model text

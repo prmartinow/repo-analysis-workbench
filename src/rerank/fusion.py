@@ -230,10 +230,12 @@ def allow_heuristic_rerank_fallback() -> bool:
 
 
 def candidate_to_rerank_document(candidate: Dict[str, object]) -> str:
+    metadata = dict(candidate.get("metadata", {}) or {})
     parts = [
         str(candidate.get("qualified_name") or candidate.get("name") or ""),
         str(candidate.get("path") or ""),
         str(candidate.get("title") or ""),
+        str(metadata.get("embedding_unit_text") or ""),
         str(candidate.get("preview") or ""),
     ]
     return "\n".join(part for part in parts if part)[:2500]

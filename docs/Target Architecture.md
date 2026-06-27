@@ -272,6 +272,12 @@ Exact source retrieval on hot paths should come from **stored offsets into cache
 
 If a semantic sidecar is used for natural-language queries, prefer **precomputed code representations with runtime query encoding** over recomputing code-side semantics on the hot path.
 
+Semantic sidecars should index bounded retrieval units, not whole files or large
+search documents. Code should be represented as line windows, function or class
+bodies, statement snippets, and short file or doc sections; hits should then be
+aggregated back to files or symbols with max-score passage aggregation (`maxp`)
+before graph expansion and answer-bundle construction.
+
 When graph-backed evidence is rendered for the model, preserve node types, relation types, and a small amount of selected property metadata instead of flattening everything into unlabeled snippets.
 
 Embedding indexes, when present, should be treated as **approximate retrieval infrastructure** with explicit recall/latency/memory tradeoffs, predicate filtering, and offline build/update behavior.

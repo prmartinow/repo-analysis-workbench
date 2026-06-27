@@ -9,6 +9,7 @@ from typing import Callable, Dict, Iterable, Iterator, List, Sequence
 
 from common.native_tool import list_bm25_docs
 from common.text import tokenize
+from embeddings.units import build_retrieval_units
 from embeddings.providers import (
     DEFAULT_HASHING_MODEL,
     embed_with_openai,
@@ -20,7 +21,7 @@ from embeddings.providers import (
 from symbols.indexer import timestamp_now
 
 
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
 DIMENSIONS = 256
 BATCH_SIZE = 32
 LIST_DOCS_BATCH_SIZE = 10_000
@@ -161,7 +162,7 @@ def build_hashing_embedding_payload(
     emit("hashing_scan_started", provider="hashing", model=model_name or DEFAULT_HASHING_MODEL)
 
     document_frequency: Counter[str] = Counter()
-    document_count = 0
+    unit_count = 0
     scan_batches = 0
     total_docs_hint: int | None = None
 
@@ -172,9 +173,9 @@ def build_hashing_embedding_payload(
             if first_item_total is not None:
                 total_docs_hint = int(first_item_total)
 
-        for document in batch:
+        for document in iter_retrieval_units(batch):
             tokens = tokenize(str(document["content"]))
-            document_count += 1
+            unit_count += 1
             for token in set(tokens):
                 document_frequency[token] += 1
 
@@ -184,15 +185,16 @@ def build_hashing_embedding_payload(
             model=model_name or DEFAULT_HASHING_MODEL,
             batch_index=scan_batches,
             batch_docs=len(batch),
-            processed_docs=document_count,
-            total_docs=total_docs_hint,
+            processed_docs=unit_count,
+            total_docs=None,
+            source_docs_total=total_docs_hint,
         )
 
     emit(
         "hashing_scan_completed",
         provider="hashing",
         model=model_name or DEFAULT_HASHING_MODEL,
-        documents=document_count,
+        documents=unit_count,
         batches=scan_batches,
     )
 
@@ -205,40 +207,30 @@ def build_hashing_embedding_payload(
         "hashing_embed_started",
         provider="hashing",
         model=model_name or DEFAULT_HASHING_MODEL,
-        total_docs=document_count,
+        total_docs=unit_count,
     )
 
     for batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
         embed_batches += 1
-        for document in batch:
+        retrieval_units = list(iter_retrieval_units(batch))
+        for document in retrieval_units:
             tokens = tokenize(str(document["content"]))
-            raw_vector = embed_tokens(tokens, document_frequency, document_count)
+            raw_vector = embed_tokens(tokens, document_frequency, unit_count)
             norm = vector_norm(raw_vector)
             vector = normalize_sparse_vector(raw_vector, norm)
             nonzero_dimensions += len(vector)
-            embedded_documents.append(
-                {
-                    "doc_id": document["doc_id"],
-                    "kind": document["kind"],
-                    "path": document["path"],
-                    "name": document["name"],
-                    "qualified_name": document["qualified_name"],
-                    "symbol_id": document["symbol_id"],
-                    "title": document["title"],
-                    "preview": document["preview"],
-                    "norm": 1.0 if vector else 0.0,
-                    "vector": {str(index): round(value, 8) for index, value in sorted(vector.items()) if value},
-                }
-            )
+            record = build_embedded_unit_record(document, 1.0 if vector else 0.0)
+            record["vector"] = {str(index): round(value, 8) for index, value in sorted(vector.items()) if value}
+            embedded_documents.append(record)
             processed_docs += 1
         emit(
             "hashing_embed_progress",
             provider="hashing",
             model=model_name or DEFAULT_HASHING_MODEL,
             batch_index=embed_batches,
-            batch_docs=len(batch),
+            batch_docs=len(retrieval_units),
             processed_docs=processed_docs,
-            total_docs=document_count,
+            total_docs=unit_count,
         )
 
     return {
@@ -284,29 +276,17 @@ def build_openai_embedding_payload(
     embedded_documents = []
     processed_docs = 0
     batch_index = 0
-    total_docs_hint: int | None = None
+    total_docs_hint = count_retrieval_units(search_root, repo_name)
 
     for search_batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
-        if search_batch and search_batch[0].get("_total_docs") is not None:
-            total_docs_hint = int(search_batch[0]["_total_docs"])
-        for batch in batched(search_batch, BATCH_SIZE):
+        retrieval_units = list(iter_retrieval_units(search_batch))
+        for batch in batched(retrieval_units, BATCH_SIZE):
             batch_index += 1
             vectors = embed_with_openai([str(document["content"] or "") for document in batch], model_name)
             for document, vector in zip(batch, vectors):
-                embedded_documents.append(
-                    {
-                        "doc_id": document["doc_id"],
-                        "kind": document["kind"],
-                        "path": document["path"],
-                        "name": document["name"],
-                        "qualified_name": document["qualified_name"],
-                        "symbol_id": document["symbol_id"],
-                        "title": document["title"],
-                        "preview": document["preview"],
-                        "norm": 1.0 if vector else 0.0,
-                        "vector": [round(float(value), 8) for value in vector],
-                    }
-                )
+                record = build_embedded_unit_record(document, 1.0 if vector else 0.0)
+                record["vector"] = [round(float(value), 8) for value in vector]
+                embedded_documents.append(record)
             processed_docs += len(batch)
             emit(
                 "openai_embed_progress",
@@ -362,12 +342,11 @@ def build_qwen_embedding_payload(
     embedded_documents = []
     processed_docs = 0
     batch_index = 0
-    total_docs_hint: int | None = None
+    total_docs_hint = count_retrieval_units(search_root, repo_name)
 
     for search_batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
-        if search_batch and search_batch[0].get("_total_docs") is not None:
-            total_docs_hint = int(search_batch[0]["_total_docs"])
-        for batch in batched(search_batch, BATCH_SIZE):
+        retrieval_units = list(iter_retrieval_units(search_batch))
+        for batch in batched(retrieval_units, BATCH_SIZE):
             batch_index += 1
             emit(
                 "qwen_embed_batch_started",
@@ -404,20 +383,9 @@ def build_qwen_embedding_payload(
                 returned_vectors=len(vectors),
             )
             for document, vector in zip(batch, vectors):
-                embedded_documents.append(
-                    {
-                        "doc_id": document["doc_id"],
-                        "kind": document["kind"],
-                        "path": document["path"],
-                        "name": document["name"],
-                        "qualified_name": document["qualified_name"],
-                        "symbol_id": document["symbol_id"],
-                        "title": document["title"],
-                        "preview": document["preview"],
-                        "norm": 1.0 if vector else 0.0,
-                        "vector": [round(float(value), 8) for value in vector],
-                    }
-                )
+                record = build_embedded_unit_record(document, 1.0 if vector else 0.0)
+                record["vector"] = [round(float(value), 8) for value in vector]
+                embedded_documents.append(record)
             processed_docs += len(batch)
             emit(
                 "qwen_embed_progress",
@@ -489,7 +457,8 @@ def query_embedding_index(
     if query_norm == 0:
         return []
 
-    results = []
+    grouped_results: Dict[str, Dict[str, object]] = {}
+    grouped_unit_hits: Dict[str, List[Dict[str, object]]] = {}
     for document in documents:
         if vector_format == "dense":
             similarity = dense_dot_product(query_vector, [float(value) for value in document.get("vector", [])])
@@ -519,35 +488,102 @@ def query_embedding_index(
         score = similarity + overlap_bonus + kind_bonus + path_penalty
         if score <= 0:
             continue
-        results.append(
+        result = {
+            "doc_id": document.get("source_doc_id") or document["doc_id"],
+            "kind": document.get("source_kind") or document["kind"],
+            "repo": repo_name,
+            "path": document.get("path"),
+            "name": document.get("name"),
+            "qualified_name": document.get("qualified_name"),
+            "symbol_id": document.get("symbol_id"),
+            "title": document.get("title"),
+            "preview": document.get("preview"),
+            "score": round(score, 6),
+            "metadata": {
+                "provider": payload["provider"],
+                "model": payload["model"],
+                "dimensions": payload["dimensions"],
+                "model_backed": bool(payload.get("model_backed")),
+                "embedding_aggregation": "maxp",
+                "embedding_aggregation_key": document.get("aggregation_key"),
+                "embedding_aggregation_kind": document.get("aggregation_kind"),
+                "embedding_unit_id": document.get("unit_id") or document.get("doc_id"),
+                "embedding_unit_kind": document.get("unit_kind"),
+                "embedding_unit_score": round(score, 6),
+                "embedding_unit_preview": document.get("preview"),
+                "embedding_unit_text": document.get("content"),
+                "embedding_unit_start_line": document.get("start_line"),
+                "embedding_unit_end_line": document.get("end_line"),
+                "embedding_unit_token_estimate": document.get("token_estimate"),
+            },
+        }
+        aggregation_key = str(document.get("aggregation_key") or result["doc_id"])
+        current = grouped_results.get(aggregation_key)
+        if current is None or float(result["score"]) > float(current["score"]):
+            grouped_results[aggregation_key] = result
+            current = result
+        unit_hits = list(grouped_unit_hits.get(aggregation_key, []))
+        unit_hits.append(
             {
-                "doc_id": document["doc_id"],
-                "kind": document["kind"],
-                "repo": repo_name,
-                "path": document.get("path"),
-                "name": document.get("name"),
-                "qualified_name": document.get("qualified_name"),
-                "symbol_id": document.get("symbol_id"),
-                "title": document.get("title"),
-                "preview": document.get("preview"),
+                "unit_id": document.get("unit_id") or document.get("doc_id"),
+                "unit_kind": document.get("unit_kind"),
                 "score": round(score, 6),
-                "metadata": {
-                    "provider": payload["provider"],
-                    "model": payload["model"],
-                    "dimensions": payload["dimensions"],
-                    "model_backed": bool(payload.get("model_backed")),
-                },
+                "preview": document.get("preview"),
+                "start_line": document.get("start_line"),
+                "end_line": document.get("end_line"),
             }
         )
+        grouped_unit_hits[aggregation_key] = sorted(unit_hits, key=lambda item: -float(item.get("score") or 0.0))[:3]
+        metadata = dict(current.get("metadata", {}) or {})
+        metadata["embedding_unit_hits"] = grouped_unit_hits[aggregation_key]
+        current["metadata"] = metadata
 
     return sorted(
-        results,
+        grouped_results.values(),
         key=lambda item: (
             -item["score"],
             str(item.get("path") or ""),
             str(item.get("qualified_name") or item.get("title") or ""),
         ),
     )[:limit]
+
+
+def iter_retrieval_units(documents: Iterable[Dict[str, object]]) -> Iterator[Dict[str, object]]:
+    for document in documents:
+        yield from build_retrieval_units(document)
+
+
+def count_retrieval_units(search_root: Path, repo_name: str) -> int:
+    total_units = 0
+    for batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
+        for document in batch:
+            total_units += len(build_retrieval_units(document))
+    return total_units
+
+
+def build_embedded_unit_record(document: Dict[str, object], norm: float) -> Dict[str, object]:
+    return {
+        "doc_id": document["doc_id"],
+        "source_doc_id": document.get("source_doc_id"),
+        "source_kind": document.get("source_kind"),
+        "unit_id": document.get("unit_id"),
+        "unit_kind": document.get("unit_kind"),
+        "aggregation_key": document.get("aggregation_key"),
+        "aggregation_kind": document.get("aggregation_kind"),
+        "kind": document["kind"],
+        "path": document["path"],
+        "name": document["name"],
+        "qualified_name": document["qualified_name"],
+        "symbol_id": document["symbol_id"],
+        "title": document["title"],
+        "preview": document["preview"],
+        "content": document["content"],
+        "start_line": document.get("start_line"),
+        "end_line": document.get("end_line"),
+        "token_estimate": document.get("token_estimate"),
+        "char_count": document.get("char_count"),
+        "norm": norm,
+    }
 
 
 def iter_search_documents(

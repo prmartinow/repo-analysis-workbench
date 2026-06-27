@@ -347,8 +347,11 @@ Implementation:
   - Tantivy plus tree-sitter;
   - SCIP graph where available;
   - Zoekt;
-  - embedding;
-  - rerank.
+  - embedding over bounded retrieval units, not whole files;
+  - rerank over the selected retrieval-unit excerpt.
+- For embedding and rerank modes, compare source-level relevance after
+  aggregating retrieval-unit scores back to files or symbols with max-score
+  passage aggregation (`maxp`).
 - Publish reports under `/mnt/workspace/code-intel/` and keep repo-local
   templates under `data/eval/cases/` or `docs/`.
 
@@ -387,11 +390,16 @@ Overall status: not complete.
 Current next milestone: AI-tooling benchmark reports.
 
 Current risk: sidecar search comparison works, but the selected AI-tooling repos
-still need benchmark reports that show retrieval quality per mode.
+still need benchmark reports that show retrieval quality per mode. Embedding
+reports should be regenerated after the retrieval-unit sidecar is built because
+the old whole-document embedding run produced invalid timeout and payload-size
+failures.
 
 Latest verification:
 
 ```bash
+python3 -m unittest tests.unit.test_embedding_units tests.unit.test_progress_logging
+python3 -m py_compile src/embeddings/units.py src/embeddings/indexer.py src/rerank/fusion.py tests/unit/test_embedding_units.py tests/unit/test_progress_logging.py
 python3 -m unittest discover tests/unit
 python3 src/cli/main.py run-benchmarks --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --eval-root /mnt/workspace/code-intel/repo-analysis-pilot/eval --cases-root data/eval/cases --repo agent-kit --mode lexical_only --limit 5
 python3 -m py_compile src/symbols/schema.py src/symbols/indexer.py src/graph/builder.py src/search/indexer.py src/summaries/builder.py
