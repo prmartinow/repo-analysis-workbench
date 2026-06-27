@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Sequence
@@ -129,6 +130,9 @@ def build_embedding_index(
             sort_keys=False,
         )
         handle.write("\n")
+
+    if payload["provider"] == "qwen":
+        clear_qwen_embedding_checkpoint(search_root, repo_name, model_name)
 
     emit(
         "build_completed",
@@ -339,13 +343,40 @@ def build_qwen_embedding_payload(
 
     emit("qwen_embed_started", provider="qwen", model=model_name)
 
-    embedded_documents = []
-    processed_docs = 0
-    batch_index = 0
+    checkpoint_path, checkpoint_meta_path = qwen_embedding_checkpoint_paths(search_root, repo_name, model_name)
+    checkpoint_records = load_qwen_embedding_checkpoint(
+        checkpoint_path,
+        checkpoint_meta_path,
+        repo_name=repo_name,
+        model_name=model_name,
+    )
+    if checkpoint_records:
+        emit(
+            "qwen_embed_checkpoint_loaded",
+            provider="qwen",
+            model=model_name,
+            documents=len(checkpoint_records),
+            checkpoint=str(checkpoint_path),
+        )
+    initialize_qwen_embedding_checkpoint(
+        checkpoint_path,
+        checkpoint_meta_path,
+        repo_name=repo_name,
+        model_name=model_name,
+    )
+
+    embedded_documents = list(checkpoint_records)
+    seen_doc_ids = {str(document.get("doc_id") or "") for document in embedded_documents}
+    processed_docs = len(embedded_documents)
+    batch_index = math.ceil(processed_docs / BATCH_SIZE)
     total_docs_hint = count_retrieval_units(search_root, repo_name)
 
     for search_batch in iter_search_documents(search_root, repo_name, batch_size=LIST_DOCS_BATCH_SIZE):
-        retrieval_units = list(iter_retrieval_units(search_batch))
+        retrieval_units = [
+            unit
+            for unit in iter_retrieval_units(search_batch)
+            if str(unit.get("doc_id") or "") not in seen_doc_ids
+        ]
         for batch in batched(retrieval_units, BATCH_SIZE):
             batch_index += 1
             emit(
@@ -372,6 +403,8 @@ def build_qwen_embedding_payload(
                     error=str(exc),
                 )
                 raise
+            if len(vectors) != len(batch):
+                raise RuntimeError(f"Qwen returned {len(vectors)} vectors for {len(batch)} embedding inputs")
             emit(
                 "qwen_embed_batch_completed",
                 provider="qwen",
@@ -382,10 +415,14 @@ def build_qwen_embedding_payload(
                 total_docs=total_docs_hint,
                 returned_vectors=len(vectors),
             )
+            new_records = []
             for document, vector in zip(batch, vectors):
                 record = build_embedded_unit_record(document, 1.0 if vector else 0.0)
                 record["vector"] = [round(float(value), 8) for value in vector]
-                embedded_documents.append(record)
+                new_records.append(record)
+                seen_doc_ids.add(str(record["doc_id"]))
+            append_qwen_embedding_checkpoint(checkpoint_path, new_records)
+            embedded_documents.extend(new_records)
             processed_docs += len(batch)
             emit(
                 "qwen_embed_progress",
@@ -413,6 +450,102 @@ def build_qwen_embedding_payload(
             "nonzero_dimensions": dimensions * len(embedded_documents),
         },
     }
+
+
+def qwen_embedding_checkpoint_paths(search_root: Path, repo_name: str, model_name: str) -> tuple[Path, Path]:
+    repo_root = search_root / repo_name
+    safe_model_name = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in model_name)
+    base = repo_root / f"embedding_index.qwen.{safe_model_name}.checkpoint"
+    return base.with_suffix(".jsonl"), base.with_suffix(".meta.json")
+
+
+def initialize_qwen_embedding_checkpoint(
+    checkpoint_path: Path,
+    checkpoint_meta_path: Path,
+    *,
+    repo_name: str,
+    model_name: str,
+) -> None:
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "repo": repo_name,
+        "provider": "qwen",
+        "model": model_name,
+        "vector_format": "dense",
+        "unit_schema": "retrieval_units",
+    }
+    with checkpoint_meta_path.open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=False)
+        handle.write("\n")
+    checkpoint_path.touch(exist_ok=True)
+
+
+def load_qwen_embedding_checkpoint(
+    checkpoint_path: Path,
+    checkpoint_meta_path: Path,
+    *,
+    repo_name: str,
+    model_name: str,
+) -> List[Dict[str, object]]:
+    if not checkpoint_path.exists() or not checkpoint_meta_path.exists():
+        return []
+    try:
+        metadata = json.loads(checkpoint_meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    expected = {
+        "schema_version": SCHEMA_VERSION,
+        "repo": repo_name,
+        "provider": "qwen",
+        "model": model_name,
+        "vector_format": "dense",
+        "unit_schema": "retrieval_units",
+    }
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        return []
+
+    records: List[Dict[str, object]] = []
+    seen_doc_ids = set()
+    with checkpoint_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            doc_id = str(record.get("doc_id") or "")
+            if not doc_id or doc_id in seen_doc_ids:
+                continue
+            if not record.get("unit_id") or not record.get("source_doc_id"):
+                continue
+            if not isinstance(record.get("vector"), list):
+                continue
+            records.append(record)
+            seen_doc_ids.add(doc_id)
+    return records
+
+
+def append_qwen_embedding_checkpoint(checkpoint_path: Path, records: Sequence[Dict[str, object]]) -> None:
+    if not records:
+        return
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    with checkpoint_path.open("a", encoding="utf-8") as handle:
+        for record in records:
+            json.dump(record, handle, sort_keys=False)
+            handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def clear_qwen_embedding_checkpoint(search_root: Path, repo_name: str, model_name: str) -> None:
+    for path in qwen_embedding_checkpoint_paths(search_root, repo_name, model_name):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def query_embedding_index(

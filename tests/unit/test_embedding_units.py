@@ -11,9 +11,13 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from embeddings.indexer import (  # noqa: E402
+    append_qwen_embedding_checkpoint,
+    build_embedded_unit_record,
     build_qwen_embedding_payload,
     embed_tokens,
+    initialize_qwen_embedding_checkpoint,
     normalize_sparse_vector,
+    qwen_embedding_checkpoint_paths,
     query_embedding_index,
 )
 from embeddings.units import (  # noqa: E402
@@ -89,12 +93,13 @@ class EmbeddingUnitsTest(unittest.TestCase):
             embedded_inputs.extend(inputs)
             return [[1.0, 0.0] for _value in inputs]
 
-        with (
-            mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
-            mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
-            mock.patch("embeddings.indexer.embed_with_qwen", side_effect=fake_embed),
-        ):
-            payload = build_qwen_embedding_payload(Path("/tmp/search"), "demo", "text")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
+                mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
+                mock.patch("embeddings.indexer.embed_with_qwen", side_effect=fake_embed),
+            ):
+                payload = build_qwen_embedding_payload(Path(tmpdir), "demo", "text")
 
         self.assertGreater(len(embedded_inputs), 1)
         self.assertTrue(all(len(value) <= EMBED_CHAR_LIMIT for value in embedded_inputs))
@@ -102,6 +107,75 @@ class EmbeddingUnitsTest(unittest.TestCase):
         self.assertEqual(payload["documents"][0]["source_doc_id"], "doc-demo")
         self.assertEqual(payload["documents"][0]["source_kind"], "file")
         self.assertIn("unit_id", payload["documents"][0])
+
+    def test_qwen_embedding_payload_resumes_checkpointed_units(self) -> None:
+        documents = [
+            {
+                "doc_id": "doc-a",
+                "kind": "file",
+                "path": "src/a.py",
+                "name": "a.py",
+                "qualified_name": None,
+                "symbol_id": None,
+                "title": "src/a.py",
+                "preview": "alpha",
+                "content": "alpha",
+                "_total_docs": 2,
+            },
+            {
+                "doc_id": "doc-b",
+                "kind": "file",
+                "path": "src/b.py",
+                "name": "b.py",
+                "qualified_name": None,
+                "symbol_id": None,
+                "title": "src/b.py",
+                "preview": "beta",
+                "content": "beta",
+                "_total_docs": 2,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            search_root = Path(tmpdir)
+            checkpoint_path, checkpoint_meta_path = qwen_embedding_checkpoint_paths(search_root, "demo", "text")
+            initialize_qwen_embedding_checkpoint(
+                checkpoint_path,
+                checkpoint_meta_path,
+                repo_name="demo",
+                model_name="text",
+            )
+            checkpointed_unit = build_retrieval_units(documents[0])[0]
+            checkpointed_record = build_embedded_unit_record(checkpointed_unit, 1.0)
+            checkpointed_record["vector"] = [0.25, 0.75]
+            append_qwen_embedding_checkpoint(checkpoint_path, [checkpointed_record])
+
+            events = []
+            embedded_inputs = []
+
+            def fake_embed(inputs: list[str], _model_name: str) -> list[list[float]]:
+                embedded_inputs.extend(inputs)
+                return [[1.0, 0.0] for _value in inputs]
+
+            with (
+                mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
+                mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
+                mock.patch("embeddings.indexer.embed_with_qwen", side_effect=fake_embed),
+            ):
+                payload = build_qwen_embedding_payload(
+                    search_root,
+                    "demo",
+                    "text",
+                    progress_callback=events.append,
+                )
+
+        self.assertEqual(embedded_inputs, ["beta"])
+        self.assertEqual(payload["summary"]["documents"], 2)
+        self.assertTrue(any(event["event"] == "qwen_embed_checkpoint_loaded" for event in events))
+        self.assertEqual(
+            {document["source_doc_id"] for document in payload["documents"]},
+            {"doc-a", "doc-b"},
+        )
 
     def test_query_embedding_index_aggregates_unit_hits_by_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

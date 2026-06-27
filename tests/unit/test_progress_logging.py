@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -74,12 +75,13 @@ class ProgressLoggingTest(unittest.TestCase):
             }
         ]
 
-        with (
-            mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
-            mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
-            mock.patch("embeddings.indexer.embed_with_qwen", return_value=[[1.0, 0.0]]) as embed,
-        ):
-            build_qwen_embedding_payload(Path("/tmp/search"), "demo", "text", progress_callback=events.append)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
+                mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
+                mock.patch("embeddings.indexer.embed_with_qwen", return_value=[[1.0, 0.0]]) as embed,
+            ):
+                build_qwen_embedding_payload(Path(tmpdir), "demo", "text", progress_callback=events.append)
 
         self.assertEqual(events[0]["event"], "qwen_embed_started")
         self.assertEqual(events[1]["event"], "qwen_embed_batch_started")
@@ -109,13 +111,14 @@ class ProgressLoggingTest(unittest.TestCase):
             }
         ]
 
-        with (
-            mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
-            mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
-            mock.patch("embeddings.indexer.embed_with_qwen", side_effect=RuntimeError("queue wait timed out")) as embed,
-        ):
-            with self.assertRaises(RuntimeError):
-                build_qwen_embedding_payload(Path("/tmp/search"), "demo", "text", progress_callback=events.append)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch("embeddings.indexer.qwen_embeddings_available", return_value=True),
+                mock.patch("embeddings.indexer.iter_search_documents", return_value=[documents]),
+                mock.patch("embeddings.indexer.embed_with_qwen", side_effect=RuntimeError("queue wait timed out")) as embed,
+            ):
+                with self.assertRaises(RuntimeError):
+                    build_qwen_embedding_payload(Path(tmpdir), "demo", "text", progress_callback=events.append)
 
         self.assertEqual([event["event"] for event in events], [
             "qwen_embed_started",
