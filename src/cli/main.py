@@ -1190,6 +1190,8 @@ def handle_build_embeddings(args: argparse.Namespace) -> int:
                 "batch_docs",
                 "batch_index",
                 "batches",
+                "batch_elapsed_ms",
+                "batch_input_chars",
                 "nonzero_dimensions",
                 "vector_format",
             ):

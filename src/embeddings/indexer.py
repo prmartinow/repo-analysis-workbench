@@ -4,6 +4,8 @@ import hashlib
 import json
 import math
 import os
+import threading
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Sequence
@@ -26,6 +28,7 @@ SCHEMA_VERSION = "0.3.0"
 DIMENSIONS = 256
 BATCH_SIZE = 32
 LIST_DOCS_BATCH_SIZE = 10_000
+DEFAULT_QWEN_HEARTBEAT_SECONDS = 60.0
 KIND_PRIORITY = {
     "symbol": 0.2,
     "statement": 0.15,
@@ -36,6 +39,16 @@ KIND_PRIORITY = {
 
 
 ProgressCallback = Callable[[Dict[str, object]], None]
+
+
+def qwen_heartbeat_interval_seconds() -> float:
+    raw_value = os.environ.get("REPO_ANALYSIS_QWEN_HEARTBEAT_SECONDS")
+    if not raw_value:
+        return DEFAULT_QWEN_HEARTBEAT_SECONDS
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        return DEFAULT_QWEN_HEARTBEAT_SECONDS
 
 
 def build_embedding_index(
@@ -341,6 +354,52 @@ def build_qwen_embedding_payload(
             }
         )
 
+    def embed_batch(batch: Sequence[Dict[str, object]], batch_index: int, processed_docs: int, total_docs: int) -> List[List[float]]:
+        texts = [str(document["content"] or "") for document in batch]
+        input_chars = sum(len(text) for text in texts)
+        started = time.perf_counter()
+        stopped = threading.Event()
+        interval = qwen_heartbeat_interval_seconds()
+
+        def emit_waiting() -> None:
+            emit(
+                "qwen_embed_batch_waiting",
+                provider="qwen",
+                model=model_name,
+                batch_index=batch_index,
+                batch_docs=len(batch),
+                processed_docs=processed_docs,
+                total_docs=total_docs,
+                batch_elapsed_ms=round((time.perf_counter() - started) * 1000, 3),
+                batch_input_chars=input_chars,
+            )
+
+        def heartbeat_loop() -> None:
+            while not stopped.wait(interval):
+                emit_waiting()
+
+        thread: threading.Thread | None = None
+        if progress_callback is not None and interval > 0:
+            thread = threading.Thread(target=heartbeat_loop, name="qwen-embed-heartbeat", daemon=True)
+            thread.start()
+        try:
+            return embed_with_qwen(
+                texts,
+                model_name,
+                headers={
+                    "X-Repo-Analysis-Repo": repo_name,
+                    "X-Repo-Analysis-Embedding-Batch-Index": batch_index,
+                    "X-Repo-Analysis-Batch-Docs": len(batch),
+                    "X-Repo-Analysis-Processed-Docs": processed_docs,
+                    "X-Repo-Analysis-Total-Docs": total_docs,
+                    "X-Repo-Analysis-Batch-Input-Chars": input_chars,
+                },
+            )
+        finally:
+            stopped.set()
+            if thread is not None:
+                thread.join(timeout=1.0)
+
     emit("qwen_embed_started", provider="qwen", model=model_name)
 
     checkpoint_path, checkpoint_meta_path = qwen_embedding_checkpoint_paths(search_root, repo_name, model_name)
@@ -389,7 +448,7 @@ def build_qwen_embedding_payload(
                 total_docs=total_docs_hint,
             )
             try:
-                vectors = embed_with_qwen([str(document["content"] or "") for document in batch], model_name)
+                vectors = embed_batch(batch, batch_index, processed_docs, total_docs_hint)
             except Exception as exc:
                 emit(
                     "qwen_embed_batch_failed",

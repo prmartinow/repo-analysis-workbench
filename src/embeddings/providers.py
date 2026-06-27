@@ -89,15 +89,21 @@ def embed_with_openai(texts: Sequence[str], model: str) -> List[List[float]]:
     return [normalize_dense_vector([float(value) for value in vector]) for vector in vectors]
 
 
-def embed_with_qwen(texts: Sequence[str], model: str) -> List[List[float]]:
+def embed_with_qwen(texts: Sequence[str], model: str, *, headers: dict[str, object] | None = None) -> List[List[float]]:
+    request_headers = {
+        "Content-Type": "application/json",
+        "X-Caller": "repo-analysis",
+        "X-Workload": "batch",
+    }
+    for key, value in (headers or {}).items():
+        if value is None:
+            continue
+        request_headers[str(key)] = str(value)
+
     request = urllib.request.Request(
         qwen_embeddings_url(),
         data=json.dumps({"input": list(texts), "model": model}).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "X-Caller": "repo-analysis",
-            "X-Workload": "batch",
-        },
+        headers=request_headers,
         method="POST",
     )
 

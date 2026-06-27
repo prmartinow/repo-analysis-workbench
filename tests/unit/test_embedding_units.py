@@ -89,7 +89,7 @@ class EmbeddingUnitsTest(unittest.TestCase):
         ]
         embedded_inputs = []
 
-        def fake_embed(inputs: list[str], _model_name: str) -> list[list[float]]:
+        def fake_embed(inputs: list[str], _model_name: str, **_kwargs) -> list[list[float]]:
             embedded_inputs.extend(inputs)
             return [[1.0, 0.0] for _value in inputs]
 
@@ -153,7 +153,7 @@ class EmbeddingUnitsTest(unittest.TestCase):
             events = []
             embedded_inputs = []
 
-            def fake_embed(inputs: list[str], _model_name: str) -> list[list[float]]:
+            def fake_embed(inputs: list[str], _model_name: str, **_kwargs) -> list[list[float]]:
                 embedded_inputs.extend(inputs)
                 return [[1.0, 0.0] for _value in inputs]
 
