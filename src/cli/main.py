@@ -68,6 +68,7 @@ from evaluation.harness import (
 )
 from graph.builder import build_graph_artifact
 from graph.store import write_graph_database
+from retrieval.staged import retrieve_paper_pipeline
 from search.indexer import build_search_index
 from search.zoekt_backend import build_zoekt_index, search_zoekt_index
 from summaries.builder import build_summary_artifacts, sync_summary_state
@@ -338,6 +339,18 @@ def build_parser() -> argparse.ArgumentParser:
     embedding_search_cmd.add_argument("--repo", required=True)
     embedding_search_cmd.add_argument("query")
     embedding_search_cmd.add_argument("--limit", type=int, default=10)
+
+    paper_pipeline_cmd = subparsers.add_parser(
+        "search-paper-pipeline",
+        help="Run BM25 fanout, retrieval-unit rerank, and maxp source aggregation.",
+    )
+    add_search_root_arg(paper_pipeline_cmd)
+    paper_pipeline_cmd.add_argument("--repo", required=True)
+    paper_pipeline_cmd.add_argument("query")
+    paper_pipeline_cmd.add_argument("--limit", type=int, default=10)
+    paper_pipeline_cmd.add_argument("--lexical-pool", type=int)
+    paper_pipeline_cmd.add_argument("--pre-rank-pool", type=int)
+    paper_pipeline_cmd.add_argument("--rerank-pool", type=int)
 
     trace_calls_cmd = subparsers.add_parser("trace-calls", help="Trace callers and callees for a symbol.")
     add_search_root_arg(trace_calls_cmd)
@@ -1398,6 +1411,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "query": args.query,
                 "results": query_embedding_index(Path(args.search_root).resolve(), args.repo, args.query, limit=args.limit),
             }
+        )
+    if args.command == "search-paper-pipeline":
+        return print_json(
+            retrieve_paper_pipeline(
+                Path(args.search_root).resolve(),
+                args.repo,
+                args.query,
+                limit=args.limit,
+                lexical_pool=args.lexical_pool,
+                pre_rank_pool=args.pre_rank_pool,
+                rerank_pool=args.rerank_pool,
+            )
         )
     if args.command == "trace-calls":
         return print_json(

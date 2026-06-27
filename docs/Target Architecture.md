@@ -278,6 +278,11 @@ bodies, statement snippets, and short file or doc sections; hits should then be
 aggregated back to files or symbols with max-score passage aggregation (`maxp`)
 before graph expansion and answer-bundle construction.
 
+Paper-style neural retrieval should stay benchmarkable as an explicit staged
+mode before becoming default behavior: large BM25 fanout, retrieval-unit
+pre-rank with semantic/source signals, neural rerank over unit excerpts, and
+`maxp` aggregation back to file or symbol evidence.
+
 When graph-backed evidence is rendered for the model, preserve node types, relation types, and a small amount of selected property metadata instead of flattening everything into unlabeled snippets.
 
 Embedding indexes, when present, should be treated as **approximate retrieval infrastructure** with explicit recall/latency/memory tradeoffs, predicate filtering, and offline build/update behavior.

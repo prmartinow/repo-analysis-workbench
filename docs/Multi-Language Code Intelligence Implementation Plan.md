@@ -348,7 +348,9 @@ Implementation:
   - SCIP graph where available;
   - Zoekt;
   - embedding over bounded retrieval units, not whole files;
-  - rerank over the selected retrieval-unit excerpt.
+  - rerank over the selected retrieval-unit excerpt;
+  - paper-style staged retrieval (`paper_pipeline`): large BM25 fanout,
+    retrieval-unit pre-rank, neural unit rerank, and `maxp` source aggregation.
 - For embedding and rerank modes, compare source-level relevance after
   aggregating retrieval-unit scores back to files or symbols with max-score
   passage aggregation (`maxp`).
@@ -399,7 +401,9 @@ Latest verification:
 
 ```bash
 python3 -m unittest tests.unit.test_embedding_units tests.unit.test_progress_logging
+python3 -m unittest tests.unit.test_staged_retrieval
 python3 -m py_compile src/embeddings/units.py src/embeddings/indexer.py src/rerank/fusion.py tests/unit/test_embedding_units.py tests/unit/test_progress_logging.py
+python3 -m py_compile src/retrieval/staged.py src/evaluation/harness.py src/cli/main.py tests/unit/test_staged_retrieval.py
 python3 -m unittest discover tests/unit
 python3 src/cli/main.py run-benchmarks --search-root /mnt/workspace/code-intel/repo-analysis-pilot/search --graph-root /mnt/workspace/code-intel/repo-analysis-pilot/graph --parsed-root /mnt/workspace/code-intel/repo-analysis-pilot/parsed --eval-root /mnt/workspace/code-intel/repo-analysis-pilot/eval --cases-root data/eval/cases --repo agent-kit --mode lexical_only --limit 5
 python3 -m py_compile src/symbols/schema.py src/symbols/indexer.py src/graph/builder.py src/search/indexer.py src/summaries/builder.py

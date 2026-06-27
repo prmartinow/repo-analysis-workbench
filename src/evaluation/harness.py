@@ -27,6 +27,7 @@ from common.telemetry import reset_telemetry, snapshot_telemetry
 from embeddings.indexer import query_embedding_index
 from retrieval.engine import retrieve_context
 from retrieval.planner import prepare_answer_bundle
+from retrieval.staged import retrieve_paper_pipeline
 from symbols.indexer import timestamp_now
 
 
@@ -42,7 +43,7 @@ DEFAULT_MODES = (
     "selective_off",
 )
 LEXICAL_BENCHMARK_MODES = {"lexical_only"}
-SEMANTIC_BENCHMARK_MODES = set(DEFAULT_MODES) | {"embedding_only"}
+SEMANTIC_BENCHMARK_MODES = set(DEFAULT_MODES) | {"embedding_only", "paper_pipeline"}
 SUPPORTED_BENCHMARK_MODES = SEMANTIC_BENCHMARK_MODES | LEXICAL_BENCHMARK_MODES
 SUMMARY_MODES = {
     "semantic_graph_rerank_summaries",
@@ -511,6 +512,10 @@ def run_case(
     if mode == "embedding_only":
         selected = query_embedding_index(search_root, case["repo"], case["query"], limit=limit)
         context_summary = {"mode": "embedding_only"}
+    elif mode == "paper_pipeline":
+        context = retrieve_paper_pipeline(search_root, case["repo"], case["query"], limit=limit)
+        selected = context["selected_context"]
+        context_summary = context["summary"]
     elif mode == "lexical_only":
         search_backend = get_search_backend(str(search_root.resolve()), str(case["repo"]))
         selected = search_backend.search(str(case["query"]), limit=limit)

@@ -72,10 +72,17 @@ Query the repository:
 python3 src/cli/main.py repo-overview --repo target-repo
 python3 src/cli/main.py find-symbol --repo target-repo "SomeSymbol"
 python3 src/cli/main.py search-lexical --repo target-repo "retry logic"
+python3 src/cli/main.py search-paper-pipeline --repo target-repo "retry logic"
 python3 src/cli/main.py callers-of --repo target-repo "SomeSymbol"
 python3 src/cli/main.py prepare-context --repo target-repo "How does retry handling work?"
 python3 src/cli/main.py prepare-answer-bundle --repo target-repo "How does retry handling work?"
 ```
+
+`search-paper-pipeline` is an explicit evaluation/inspection mode inspired by
+repository-level neural retrieval papers: it takes a large BM25 candidate pool,
+splits hits into bounded retrieval units, fuses embedding/source signals,
+reranks unit excerpts in local-inference-sized batches, and aggregates unit
+scores back to files or symbols with `maxp`.
 
 ## Repository Scope
 
